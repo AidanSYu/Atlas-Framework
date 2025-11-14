@@ -5,3 +5,13 @@ python-multipart==0.0.12
 requests==2.32.3
 duckduckgo-search==6.3.7
 beautifulsoup4==4.12.3
+
+How to run:
+Run fastapi backend: ./run-backend.sh
+Initialize Ollama: ollama serve
+Test by running: ollama run mistral "test"
+
+Example run in terminal: 
+curl -X POST http://localhost:8000/api/researcher/research \
+  -H "Content-Type: application/json" \
+  -d '{"disease": "Type 2 diabetes"}'
