@@ -12,7 +12,7 @@ class ResearcherAgent:
         try:
             url = "http://127.0.0.1:11434/api/generate"
             payload = {
-                "model": "mistral",
+                "model": "llama3.1",
                 "prompt": prompt,
                 "stream": False
             }

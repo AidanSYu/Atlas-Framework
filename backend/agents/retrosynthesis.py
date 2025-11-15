@@ -5,6 +5,103 @@ Uses RDKit + LLM to provide retrosynthesis analysis
 
 import requests
 from typing import Dict, List, Any, Optional
+
+# Try to import chemllm package; if unavailable, we'll fall back to a HF wrapper below
+try:
+    from chemllm import ChemLLMClient
+except Exception:
+    ChemLLMClient = None
+
+
+class HuggingFaceChemLLM:
+    """Minimal Hugging Face wrapper for ChemLLM models.
+
+    Loads a ChemLLM model from Hugging Face and exposes `generate(prompt, ...)`.
+    This is a best-effort fallback — loading requires `transformers` and `torch`.
+    """
+
+    def __init__(self, model_id: str = "AI4Chem/ChemLLM-7B-Chat-1.5-DPO"):
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            import torch
+        except Exception as e:
+            raise RuntimeError(f"HuggingFace dependencies missing: {e}")
+
+        self.model_id = model_id
+        self.torch = torch
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+
+        try:
+            if torch.cuda.is_available():
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=True,
+                )
+        except Exception as e:
+            raise RuntimeError(f"Failed to load HF model {model_id}: {e}")
+
+    def generate(self, prompt: str, model: str = None, max_tokens: int = 256):
+        """Generate response using simple, direct generation without hanging issues."""
+        try:
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            
+            # Move to device
+            try:
+                device = next(self.model.parameters()).device
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+            except Exception:
+                pass
+
+            # Generate with minimal, stable parameters (no generation_config to avoid hanging)
+            try:
+                with self.torch.no_grad():
+                    outputs = self.model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs.get("attention_mask"),
+                        max_new_tokens=min(max_tokens, 256),
+                        do_sample=False,  # Greedy decoding - most stable
+                        temperature=None,  # Ignore when do_sample=False
+                        top_p=None,  # Ignore when do_sample=False
+                        top_k=None,  # Ignore when do_sample=False
+                        use_cache=False,  # Disable cache to avoid hanging
+                        pad_token_id=self.tokenizer.eos_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+            except RuntimeError as gen_err:
+                if "out of memory" in str(gen_err).lower():
+                    return "[ChemLLM: Out of memory - try smaller prompt]"
+                else:
+                    return f"[ChemLLM generation error: {str(gen_err)[:80]}]"
+            except Exception as gen_err:
+                return f"[ChemLLM generation error: {type(gen_err).__name__}: {str(gen_err)[:60]}]"
+            
+            if outputs is None:
+                return "[ChemLLM: No output generated]"
+            
+            # Decode output safely
+            try:
+                # Handle batch output (usually just 1 sequence)
+                if len(outputs.shape) > 1:
+                    text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                else:
+                    text = self.tokenizer.decode(outputs, skip_special_tokens=True)
+            except Exception as decode_err:
+                return f"[ChemLLM decode error: {str(decode_err)[:50]}]"
+            
+            return text if text else "[ChemLLM: Empty response]"
+        except Exception as e:
+            import traceback
+            return f"[ChemLLM error: {type(e).__name__}: {str(e)[:80]}]"
+
 try:
     from rdkit import Chem
     from rdkit.Chem import AllChem, Descriptors
@@ -21,6 +118,19 @@ class RetrosynthesisEngine:
     
     def __init__(self):
         self.common_reactions = self._load_reaction_templates()
+        # Initialize a chemistry LLM client when possible
+        self.chem_client: Optional[object] = None
+        if ChemLLMClient is not None:
+            try:
+                self.chem_client = ChemLLMClient()
+            except Exception:
+                self.chem_client = None
+
+        if self.chem_client is None:
+            try:
+                self.chem_client = HuggingFaceChemLLM()
+            except Exception:
+                self.chem_client = None
     
     def _load_reaction_templates(self) -> List[Dict[str, str]]:
         """Common organic chemistry reaction templates."""
@@ -68,7 +178,28 @@ class RetrosynthesisEngine:
         ]
     
     def _local_llm(self, prompt: str, timeout: int = 180) -> str:
-        """Call local Ollama LLM."""
+        """Call a local chemistry LLM for retrosynthesis prompts.
+
+        Preference order:
+        1. `chemllm` package client (if installed)
+        2. Hugging Face ChemLLM model via `transformers` (if available)
+        3. Local Ollama HTTP server as a last resort
+        """
+
+        # Try chem_client if available
+        if getattr(self, 'chem_client', None) is not None:
+            try:
+                if hasattr(self.chem_client, 'generate'):
+                    return self.chem_client.generate(prompt=prompt)
+                elif hasattr(self.chem_client, 'create'):
+                    return self.chem_client.create(prompt=prompt)
+                else:
+                    return str(self.chem_client)
+            except Exception:
+                # Fall through to Ollama fallback
+                pass
+
+        # Fallback to Ollama HTTP endpoint
         try:
             url = "http://127.0.0.1:11434/api/generate"
             payload = {
@@ -213,16 +344,27 @@ class RetrosynthesisEngine:
         
         # Step 2: Generate retrosynthetic analysis with LLM
         properties_text = ""
-        if result["molecular_properties"]:
+        if result["molecular_properties"] and "error" not in result["molecular_properties"]:
             props = result["molecular_properties"]
+            mw = props.get('molecular_weight', 'N/A')
+            logp = props.get('logp', 'N/A')
+            h_donors = props.get('h_bond_donors', 'N/A')
+            h_acceptors = props.get('h_bond_acceptors', 'N/A')
+            aromatic = props.get('aromatic_rings', 'N/A')
+            complexity = props.get('complexity_score', 'N/A')
+            
+            mw_str = f"{mw:.2f}" if isinstance(mw, (int, float)) else str(mw)
+            logp_str = f"{logp:.2f}" if isinstance(logp, (int, float)) else str(logp)
+            complexity_str = f"{complexity:.1f}" if isinstance(complexity, (int, float)) else str(complexity)
+            
             properties_text = f"""
 Molecular Properties:
-- MW: {props.get('molecular_weight', 'N/A'):.2f} g/mol
-- LogP: {props.get('logp', 'N/A'):.2f}
-- H-bond donors: {props.get('h_bond_donors', 'N/A')}
-- H-bond acceptors: {props.get('h_bond_acceptors', 'N/A')}
-- Aromatic rings: {props.get('aromatic_rings', 'N/A')}
-- Complexity score: {props.get('complexity_score', 'N/A'):.1f}/100
+- MW: {mw_str} g/mol
+- LogP: {logp_str}
+- H-bond donors: {h_donors}
+- H-bond acceptors: {h_acceptors}
+- Aromatic rings: {aromatic}
+- Complexity score: {complexity_str}/100
 """
         
         functional_groups_text = ""
