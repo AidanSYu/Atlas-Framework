@@ -1,0 +1,213 @@
+/* Project Workspace Styles */
+.project-workspace {
+  min-height: 100vh;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Navigation Bar */
+.workspace-nav {
+  background: white;
+  border-bottom: 2px solid #e2e8f0;
+  padding: 20px 40px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.back-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: #f1f5f9;
+  border: none;
+  border-radius: 10px;
+  color: #475569;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.back-btn:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+.back-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.project-info h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.disease-tag {
+  display: inline-block;
+  padding: 4px 12px;
+  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+  color: #4338ca;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.nav-right {
+  display: flex;
+  gap: 12px;
+}
+
+.icon-btn {
+  width: 40px;
+  height: 40px;
+  background: #f1f5f9;
+  border: none;
+  border-radius: 10px;
+  color: #64748b;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.icon-btn:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+.icon-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Tab Navigation */
+.tab-navigation {
+  background: white;
+  border-bottom: 2px solid #e2e8f0;
+  padding: 0 40px;
+  display: flex;
+  gap: 8px;
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: #64748b;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-bottom: -2px;
+}
+
+.tab-btn:hover {
+  color: #1e293b;
+  background: rgba(67, 56, 202, 0.05);
+}
+
+.tab-btn.active {
+  color: #4338ca;
+  border-bottom-color: #4338ca;
+  background: rgba(67, 56, 202, 0.05);
+}
+
+.tab-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* Tab Content */
+.tab-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Common Tab Styles */
+.tab-header {
+  padding: 40px;
+  background: white;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.tab-header h2 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  font-weight: 800;
+  color: #1e293b;
+}
+
+.tab-header p {
+  margin: 0;
+  color: #64748b;
+  font-size: 16px;
+}
+
+/* Placeholder Content */
+.placeholder-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 100px 40px;
+  text-align: center;
+}
+
+.placeholder-icon {
+  width: 120px;
+  height: 120px;
+  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+  border-radius: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #4338ca;
+  margin-bottom: 32px;
+}
+
+.placeholder-icon svg {
+  width: 60px;
+  height: 60px;
+}
+
+.placeholder-content h3 {
+  margin: 0 0 16px;
+  font-size: 32px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.placeholder-content p {
+  margin: 0 0 8px;
+  color: #64748b;
+  font-size: 18px;
+  max-width: 600px;
+}
+
+.coming-soon-text {
+  color: #92400e;
+  background: #fef3c7;
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-weight: 600;
+  display: inline-block;
+  margin-top: 20px;
+}

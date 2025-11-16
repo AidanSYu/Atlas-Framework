@@ -27,9 +27,9 @@ class ResearchDiseaseResponse(BaseModel):
     summary: str
     sources: List[str]
 
-from backend.agents.researcher import ResearcherAgent
-from backend.agents.retrosynthesis import RetrosynthesisEngine
-from backend.agents.manufacturer import ManufacturabilityAgent
+from agents.researcher import ResearcherAgent
+from agents.retrosynthesis import RetrosynthesisEngine
+from agents.manufacturer import ManufacturabilityAgent
 import threading
 import time
 import uuid
@@ -273,3 +273,116 @@ def integrated_research_manufacture(req: IntegratedResearchRequest):
         research_sources=research_results["sources"],
         compound_analyses=compound_analyses
     )
+
+
+# Retrosynthesis-specific endpoints
+class RetrosynthesisRequest(BaseModel):
+    compound_name: str
+    smiles: Optional[str] = None
+    disease_context: Optional[str] = None
+
+@app.post("/api/retrosynthesis/analyze")
+def retrosynthesis_analyze(req: RetrosynthesisRequest):
+    """Analyze retrosynthetic routes for a compound."""
+    retro = RetrosynthesisEngine()
+    result = retro.retrosynthesis_analysis(req.compound_name, smiles=req.smiles)
+    return {
+        "compound_name": req.compound_name,
+        "smiles": req.smiles,
+        "analysis": result
+    }
+
+
+# Manufacturing-specific endpoints
+class ManufacturingRequest(BaseModel):
+    compound_name: str
+    smiles: Optional[str] = None
+    compound_type: str = "small_molecule"
+    synthesis_complexity: str = "moderate"
+    disease_context: Optional[str] = None
+
+@app.post("/api/manufacturing/analyze")
+def manufacturing_analyze(req: ManufacturingRequest):
+    """Analyze manufacturability and scalability for a compound."""
+    mfg = ManufacturabilityAgent()
+    result = mfg.assess_scalability(
+        compound_name=req.compound_name,
+        compound_type=req.compound_type,
+        synthesis_complexity=req.synthesis_complexity,
+        smiles=req.smiles,
+        researcher_context=req.disease_context
+    )
+    return {
+        "compound_name": req.compound_name,
+        "smiles": req.smiles,
+        "analysis": result
+    }
+
+
+# Research chatbot endpoint
+class ChatRequest(BaseModel):
+    message: str
+    disease_context: Optional[str] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None
+
+@app.post("/api/research/chat")
+def research_chat(req: ChatRequest):
+    """Research chatbot for answering questions about diseases and treatments."""
+    researcher = ResearcherAgent()
+    
+    # Build context from conversation history
+    context = ""
+    if req.conversation_history:
+        context = "\n".join([
+            f"{'User' if msg.get('role') == 'user' else 'Assistant'}: {msg.get('content', '')}"
+            for msg in req.conversation_history[-6:]  # Last 6 messages for context
+        ])
+    
+    # Build the enhanced prompt with disease context and conversation history
+    prompt = f"""You are a pharmaceutical research assistant specializing in drug discovery and development.
+
+Disease Context: {req.disease_context or 'General pharmaceutical research'}
+
+Previous Conversation:
+{context if context else 'No previous conversation'}
+
+Current Question: {req.message}
+
+Provide a detailed, scientifically accurate response. Include:
+- Relevant research findings
+- Potential therapeutic approaches
+- Key molecular targets or pathways
+- Safety considerations where applicable
+
+If the question is about finding research or literature, perform a web search using your knowledge.
+"""
+    
+    # Check if this is a research/literature query
+    research_keywords = ['find', 'research', 'papers', 'studies', 'literature', 'pathway', 'treatment', 'therapy']
+    is_research_query = any(keyword in req.message.lower() for keyword in research_keywords)
+    
+    if is_research_query:
+        # Use research_disease for literature queries
+        search_query = f"{req.message} {req.disease_context or ''}"
+        result = researcher.research_disease(search_query)
+        return {
+            "response": result.get("summary", "I couldn't find relevant information."),
+            "sources": result.get("sources", [])
+        }
+    else:
+        # Use LLM for direct questions
+        try:
+            response = researcher._local_llm(prompt, max_tokens=1024)
+            return {
+                "response": response,
+                "sources": []
+            }
+        except Exception as e:
+            return {
+                "response": f"I'm having trouble connecting to the AI model. Please make sure Ollama is running with llama3.1. Error: {str(e)}",
+                "sources": []
+            }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8001)

@@ -7,10 +7,10 @@ from typing import Dict
 
 class ResearcherAgent:
     def _local_llm(self, prompt: str, max_tokens: int = 2048) -> str:
-        """Query the local Ollama server for research prompts using `llama3.1`.
+        """Query the local Ollama server for research prompts using `llama3.2`.
 
         Research tasks often require broad, web-focused models. This method
-        uses a local Ollama HTTP server (model `llama3.1`) to handle those
+        uses a local Ollama HTTP server (model `llama3.2:1b`) to handle those
         prompts. If Ollama is not running, it raises a clear RuntimeError
         explaining how to start and pull the model.
         """
@@ -18,12 +18,12 @@ class ResearcherAgent:
         try:
             url = "http://127.0.0.1:11434/api/generate"
             payload = {
-                "model": "llama3.1",
+                "model": "llama3.2:1b",
                 "prompt": prompt,
                 "stream": False,
                 "num_predict": max_tokens,
             }
-            response = requests.post(url, json=payload, timeout=300)
+            response = requests.post(url, json=payload, timeout=120)
             response.raise_for_status()
             data = response.json()
             return data.get("response", "").strip()
@@ -33,7 +33,7 @@ class ResearcherAgent:
                 raise RuntimeError(
                     "Ollama is not running or unreachable. To enable research LLMs:\n"
                     "1. Install Ollama: https://ollama.ai (or use your platform's installer)\n"
-                    "2. Pull the model: `ollama pull llama3.1`\n"
+                    "2. Pull the model: `ollama pull llama3.2:1b`\n"
                     "3. Start the server: `ollama serve`"
                 )
             elif "Read timed out" in error_msg:
@@ -147,41 +147,65 @@ Example format: [{{"id": 1, "title": "...", "summary": "..."}}, {{"id": 2, "titl
 
     def deep_analyze_pathway(self, disease: str, pathway_text: str) -> Dict[str, object]:
         """Produce a deep analysis of the selected pathway and propose candidate compounds.
+        
+        Uses web scraping to find real research papers and DOI references.
 
         Returns a dict with keys: deep_analysis (str), candidates (list of {name,smiles,rationale}).
         """
+        # Step 1: Search for relevant research papers
+        search_query = f"{disease} {pathway_text} drug candidates clinical trials"
+        search_results = self._search_web(search_query, num=8)
+        
+        # Step 2: Scrape content from the search results
+        extracted = []
+        for r in search_results:
+            url = r.get("url")
+            if not url:
+                continue
+            content = self._scrape_url(url)
+            extracted.append({"url": url, "content": content[:3000]})
+        
+        # Step 3: Combine scraped content
+        combined_text = "\n\n".join(f"Source: {e['url']}\n{e['content']}" for e in extracted)
+        
+        # Step 4: Create prompt with real research data
         prompt = f"""
 You are a senior translational researcher specializing in {disease}. 
 
 Selected therapeutic pathway:
 {pathway_text}
 
+Based on the following research articles and clinical data:
+
+{combined_text[:12000]}
+
 Provide a comprehensive deep analysis covering:
 
 1. **MECHANISM OF ACTION**: How does this pathway work at the molecular level?
 2. **MOLECULAR TARGETS**: What proteins, receptors, or pathways are targeted?
-3. **FEASIBILITY**: Clinical and scientific rationale
+3. **FEASIBILITY**: Clinical and scientific rationale based on the research
 4. **CHEMICAL SCAFFOLDS**: What molecular structures would be effective?
-5. **CANDIDATE MOLECULES**: Propose 2-3 specific small-molecule drug candidates
+5. **CANDIDATE MOLECULES**: Propose 2-3 specific small-molecule drug candidates based on the literature
 
 For each candidate, provide:
-- name: Clear compound name
+- name: Clear compound name (use actual compounds from the research if available)
 - smiles: SMILES notation if known (or empty string)
-- rationale: Why this molecule targets the pathway (2-3 sentences)
+- rationale: Why this molecule targets the pathway (2-3 sentences, cite evidence)
 
+IMPORTANT: Include DOI references where available. Extract DOIs from the research text (format: 10.xxxx/xxxxx)
 
 Return ONLY valid JSON with this structure:
 {{
-  "deep_analysis": "detailed analysis text here (at least 200 words)",
+  "deep_analysis": "detailed analysis text here (at least 300 words). Include citations and DOI references in format: (DOI: 10.xxxx/xxxxx)",
   "candidates": [
-    {{"name": "Compound Name", "smiles": "SMILES or empty", "rationale": "explanation"}},
-    {{"name": "Compound Name 2", "smiles": "SMILES or empty", "rationale": "explanation"}}
+    {{"name": "Compound Name", "smiles": "SMILES or empty", "rationale": "explanation with DOI if available"}},
+    {{"name": "Compound Name 2", "smiles": "SMILES or empty", "rationale": "explanation with DOI if available"}}
   ]
 }}
 
 Do not include any text outside the JSON structure. No markdown code blocks.
 """
-        resp = self._local_llm(prompt, max_tokens=1024)
+        resp = self._local_llm(prompt, max_tokens=2048)
         
         # Clean response - remove markdown code blocks if present
         resp = resp.strip()
