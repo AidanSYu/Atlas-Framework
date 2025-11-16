@@ -1,10 +1,7 @@
-# Placeholder for agent-specific logic; can be swapped with real models/services later
-from dataclasses import dataclass
-from typing import List
+"""Agent modules for drug development pipeline."""
 
-@dataclass
-class Route:
-    route_id: str
-    confidence: float
-    summary: str
-    steps: List[str]
+from .researcher import ResearcherAgent
+from .retrosynthesis import RetrosynthesisEngine
+from .manufacturer import ManufacturabilityAgent
+
+__all__ = ['ResearcherAgent', 'RetrosynthesisEngine', 'ManufacturabilityAgent']

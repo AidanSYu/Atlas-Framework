@@ -199,13 +199,24 @@ class CompoundAnalysisResponse(BaseModel):
 @app.post("/api/synthesis/analyze", response_model=CompoundAnalysisResponse)
 def analyze_compound(req: CompoundAnalysisRequest):
     """Analyze a single compound for synthesis routes and manufacturability."""
-    agent = SynthesisManufacturerAgent()
-    result = agent.analyze_compound(
-        compound_name=req.compound_name,
+    retro = RetrosynthesisEngine()
+    mfg = ManufacturabilityAgent()
+    
+    retro_result = retro.retrosynthesis_analysis(req.compound_name, smiles=req.smiles)
+    mfg_result = mfg.assess_scalability(
+        req.compound_name, 
         smiles=req.smiles,
         researcher_context=req.researcher_context
     )
-    return CompoundAnalysisResponse(**result)
+    
+    return CompoundAnalysisResponse(
+        compound_name=req.compound_name,
+        molecule_type="small_molecule",
+        smiles=req.smiles,
+        synthesis_analysis=retro_result,
+        manufacturability=mfg_result,
+        integrated_summary=f"Synthesis complexity: {retro_result.get('molecular_properties', {}).get('complexity_score', 'N/A')}/100. Manufacturability score: {mfg_result.get('scalability_score', 'N/A')}/100"
+    )
 
 
 class IntegratedResearchRequest(BaseModel):
@@ -221,15 +232,40 @@ class IntegratedResearchResponse(BaseModel):
 def integrated_research_manufacture(req: IntegratedResearchRequest):
     """
     Integrated endpoint: Research disease treatments and analyze manufacturability.
-    Combines ResearcherAgent and SynthesisManufacturerAgent.
+    Combines ResearcherAgent, RetrosynthesisEngine, and ManufacturabilityAgent.
     """
     # Step 1: Research the disease
     researcher = ResearcherAgent()
     research_results = researcher.research_disease(req.disease)
     
-    # Step 2: Analyze compounds for manufacturability
-    manufacturer = SynthesisManufacturerAgent()
-    compound_analyses = manufacturer.batch_analyze_from_research(research_results)
+    # Step 2: Generate pathways and analyze candidates
+    pathways = researcher.generate_pathways(req.disease)
+    
+    # For simplicity, analyze first pathway
+    if pathways and len(pathways) > 0:
+        first_pathway = pathways[0].get('summary', '')
+        deep_analysis = researcher.deep_analyze_pathway(req.disease, first_pathway)
+        candidates = deep_analysis.get('candidates', [])
+        
+        retro = RetrosynthesisEngine()
+        mfg = ManufacturabilityAgent()
+        compound_analyses = []
+        
+        for cand in candidates[:3]:  # Limit to 3 for performance
+            name = cand.get('name', 'Unknown')
+            smiles = cand.get('smiles', '')
+            
+            retro_result = retro.retrosynthesis_analysis(name, smiles=smiles)
+            mfg_result = mfg.assess_scalability(name, smiles=smiles)
+            
+            compound_analyses.append({
+                'name': name,
+                'smiles': smiles,
+                'retrosynthesis': retro_result,
+                'manufacturability': mfg_result
+            })
+    else:
+        compound_analyses = []
     
     return IntegratedResearchResponse(
         disease=req.disease,

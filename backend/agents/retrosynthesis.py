@@ -406,27 +406,3 @@ Be specific about reagents, conditions, and protecting groups where relevant."""
         result["commercial_availability"] = "[Skipped for performance - focus on route feasibility above]"
         
         return result
-    
-    def compare_routes(self, routes_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Compare multiple synthetic routes and recommend best one."""
-        
-        prompt = f"""You are a pharmaceutical process chemist. Analyze these synthetic routes and provide:
-
-Routes Data:
-{str(routes_data)[:2000]}
-
-Provide:
-1. **Route Comparison Table**: Rank routes by: (a) Step count (b) Overall yield (c) Cost (d) Complexity
-2. **Recommended Route**: Which one for process development and why
-3. **Key Optimization Opportunities**: Top 3 steps that need improvement
-4. **Scale-Up Risks**: Main challenges going from lab to pilot to commercial scale
-5. **Timeline Estimate**: Lab development → Process optimization → Commercial production
-
-Be quantitative and specific."""
-
-        comparison = self._local_llm(prompt, timeout=180)
-        
-        return {
-            "comparison_analysis": comparison,
-            "routes_analyzed": routes_data.get("compound_name", "Unknown")
-        }
