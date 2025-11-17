@@ -176,3 +176,11 @@ This validates:
 - API endpoint registration
 
 See SETUP_WINDOWS.md for detailed troubleshooting.
+
+
+
+For AIDAN ONLY:
+
+cd 'c:\Users\aidan\OneDrive - Duke University\ContAInnum COED\DIC03-ContAInnum\backend' ; python app.py
+
+cd 'c:\Users\aidan\OneDrive - Duke University\ContAInnum COED\DIC03-ContAInnum\frontend' ; npm run dev

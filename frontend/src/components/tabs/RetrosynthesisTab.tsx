@@ -105,41 +105,73 @@ export default function RetrosynthesisTab({ project }: RetrosynthesisTabProps) {
         <div className="results-section">
           <div className="result-header">
             <h3>{result.compound_name}</h3>
-            {result.smiles && <div className="smiles-display">{result.smiles}</div>}
+            {result.smiles && <div className="smiles-display">SMILES: {result.smiles}</div>}
           </div>
 
           <div className="results-grid">
-            {result.analysis.molecular_properties && (
+            {result.analysis.molecular_properties && !result.analysis.molecular_properties.error && (
               <div className="result-card">
                 <h4>Molecular Properties</h4>
                 <div className="property-list">
+                  {result.analysis.molecular_properties.molecular_weight !== undefined && (
+                    <div className="property-item">
+                      <span>Molecular Weight:</span>
+                      <strong>{result.analysis.molecular_properties.molecular_weight.toFixed(2)} g/mol</strong>
+                    </div>
+                  )}
+                  {result.analysis.molecular_properties.logp !== undefined && (
+                    <div className="property-item">
+                      <span>LogP:</span>
+                      <strong>{result.analysis.molecular_properties.logp.toFixed(2)}</strong>
+                    </div>
+                  )}
+                  {result.analysis.molecular_properties.h_bond_donors !== undefined && (
+                    <div className="property-item">
+                      <span>H-bond Donors:</span>
+                      <strong>{result.analysis.molecular_properties.h_bond_donors}</strong>
+                    </div>
+                  )}
+                  {result.analysis.molecular_properties.h_bond_acceptors !== undefined && (
+                    <div className="property-item">
+                      <span>H-bond Acceptors:</span>
+                      <strong>{result.analysis.molecular_properties.h_bond_acceptors}</strong>
+                    </div>
+                  )}
+                  {result.analysis.molecular_properties.aromatic_rings !== undefined && (
+                    <div className="property-item">
+                      <span>Aromatic Rings:</span>
+                      <strong>{result.analysis.molecular_properties.aromatic_rings}</strong>
+                    </div>
+                  )}
                   {result.analysis.molecular_properties.complexity_score !== undefined && (
                     <div className="property-item">
                       <span>Complexity Score:</span>
-                      <strong>{result.analysis.molecular_properties.complexity_score}/100</strong>
-                    </div>
-                  )}
-                  {result.analysis.molecular_properties.molecular_weight && (
-                    <div className="property-item">
-                      <span>Molecular Weight:</span>
-                      <strong>{result.analysis.molecular_properties.molecular_weight}</strong>
+                      <strong>{result.analysis.molecular_properties.complexity_score.toFixed(1)}/100</strong>
                     </div>
                   )}
                 </div>
               </div>
             )}
 
-            {result.analysis.synthesis_strategy && (
+            {result.analysis.functional_groups && result.analysis.functional_groups.length > 0 && (
               <div className="result-card">
-                <h4>Synthesis Strategy</h4>
-                <p>{result.analysis.synthesis_strategy}</p>
+                <h4>Functional Groups</h4>
+                <div className="functional-groups">
+                  {result.analysis.functional_groups.map((group: string, idx: number) => (
+                    <span key={idx} className="functional-group-badge">{group}</span>
+                  ))}
+                </div>
               </div>
             )}
 
-            {result.analysis.detailed_assessment && (
+            {result.analysis.retrosynthetic_routes && (
               <div className="result-card full-width">
-                <h4>Detailed Assessment</h4>
-                <p>{result.analysis.detailed_assessment}</p>
+                <h4>Retrosynthetic Analysis</h4>
+                <div className="retro-analysis">
+                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', lineHeight: '1.6' }}>
+                    {result.analysis.retrosynthetic_routes}
+                  </pre>
+                </div>
               </div>
             )}
           </div>

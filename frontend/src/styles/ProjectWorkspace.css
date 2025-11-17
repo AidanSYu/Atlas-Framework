@@ -1,9 +1,10 @@
 /* Project Workspace Styles */
 .project-workspace {
-  min-height: 100vh;
+  height: 100vh;
   background: #f8fafc;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* Navigation Bar */

@@ -20,9 +20,9 @@ class HuggingFaceChemLLM:
     This is a best-effort fallback — loading requires `transformers` and `torch`.
     """
 
-    def __init__(self, model_id: str = "AI4Chem/ChemLLM-7B-Chat-1.5-DPO"):
+    def __init__(self, model_id: str = "AI4Chem/ChemLLM-7B-Chat-1.5-DPO", use_quantization: bool = True):
         try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
             import torch
         except Exception as e:
             raise RuntimeError(f"HuggingFace dependencies missing: {e}")
@@ -33,19 +33,46 @@ class HuggingFaceChemLLM:
 
         try:
             if torch.cuda.is_available():
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_id,
-                    dtype=torch.float16,
-                    device_map="auto",
-                    trust_remote_code=True,
-                )
+                if use_quantization:
+                    # 4-bit quantization for faster inference and lower memory
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4"
+                    )
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_id,
+                        quantization_config=quantization_config,
+                        device_map="auto",
+                        trust_remote_code=True,
+                    )
+                else:
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_id,
+                        dtype=torch.float16,
+                        device_map="auto",
+                        trust_remote_code=True,
+                    )
             else:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_id,
-                    torch_dtype=torch.float32,
-                    low_cpu_mem_usage=True,
-                    trust_remote_code=True,
-                )
+                if use_quantization:
+                    # 8-bit quantization for CPU (4-bit requires CUDA)
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_8bit=True,
+                    )
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_id,
+                        quantization_config=quantization_config,
+                        device_map="auto",
+                        trust_remote_code=True,
+                    )
+                else:
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_id,
+                        torch_dtype=torch.float32,
+                        low_cpu_mem_usage=True,
+                        trust_remote_code=True,
+                    )
         except Exception as e:
             raise RuntimeError(f"Failed to load HF model {model_id}: {e}")
 
@@ -123,13 +150,18 @@ class RetrosynthesisEngine:
         if ChemLLMClient is not None:
             try:
                 self.chem_client = ChemLLMClient()
-            except Exception:
+                print("[RETRO] ChemLLM client initialized successfully")
+            except Exception as e:
+                print(f"[RETRO] ChemLLM client failed: {e}")
                 self.chem_client = None
 
         if self.chem_client is None:
             try:
+                print("[RETRO] Loading HuggingFace ChemLLM (this may take a while on first run)...")
                 self.chem_client = HuggingFaceChemLLM()
-            except Exception:
+                print("[RETRO] HuggingFace ChemLLM loaded successfully")
+            except Exception as e:
+                print(f"[RETRO] HuggingFace ChemLLM failed to load: {e}")
                 self.chem_client = None
     
     def _load_reaction_templates(self) -> List[Dict[str, str]]:
@@ -178,30 +210,31 @@ class RetrosynthesisEngine:
         ]
     
     def _local_llm(self, prompt: str, timeout: int = 180) -> str:
-        """Call the project's chemistry LLM for retrosynthesis prompts.
-
-        Preference order:
-        1. `chemllm` package client (if installed)
-        2. Hugging Face ChemLLM model via `transformers` (if available)
-
-        Note: Ollama/Mistral fallback has been removed. If no local ChemLLM
-        is available, this method returns a clear error string instead of
-        attempting to call external Mistral services.
+        """Call Ollama for retrosynthesis prompts using llama3.2:1b.
+        
+        Falls back from ChemLLM since it's too large for most systems.
+        Uses the same Ollama instance as the research agent.
         """
-
-        client = getattr(self, 'chem_client', None)
-        if client is None:
-            return "[LLM unavailable: ChemLLM client not configured]"
-
         try:
-            if hasattr(client, 'generate'):
-                return client.generate(prompt=prompt)
-            elif hasattr(client, 'create'):
-                return client.create(prompt=prompt)
+            url = "http://127.0.0.1:11434/api/generate"
+            payload = {
+                "model": "llama3.2:1b",
+                "prompt": prompt,
+                "stream": False,
+                "num_predict": 2048,
+            }
+            response = requests.post(url, json=payload, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "").strip()
+        except requests.exceptions.RequestException as e:
+            error_msg = str(e)
+            if "Connection refused" in error_msg or "ConnectTimeout" in error_msg:
+                return "[Ollama is not running. Please start it with: ollama serve]"
+            elif "Read timed out" in error_msg:
+                return "[Ollama request timed out - model may be taking too long]"
             else:
-                return str(client)
-        except Exception as e:
-            return f"[LLM error: {type(e).__name__}: {str(e)[:200]}]"
+                return f"[Ollama HTTP error: {error_msg}]"
     
     def _analyze_molecule(self, smiles: str) -> Dict[str, Any]:
         """Analyze molecular properties using RDKit."""
@@ -366,37 +399,66 @@ Molecular Properties:
             for disc in result["strategic_disconnections"]:
                 disconnections_text += f"- {disc['reaction']}: {disc['description']}\n"
         
-        retro_prompt = f"""You are an expert synthetic organic chemist. Provide detailed retrosynthetic analysis for: {compound_name}
+        retro_prompt = f"""You are an expert synthetic organic chemist analyzing the retrosynthesis of {compound_name}.
 {f"SMILES: {smiles}" if smiles else ""}
 {properties_text}
 {functional_groups_text}
 {disconnections_text}
 
-Provide THREE different retrosynthetic routes with the following structure:
+Provide a detailed step-by-step retrosynthetic analysis similar to SciFinder. Include:
 
-**ROUTE 1: [Name the strategy, e.g., "Convergent Synthesis"]**
-Key Disconnection: [Main strategic bond to break]
-Retrosynthetic Steps:
-1. [First disconnection and logic]
-2. [Second disconnection]
-3. [Continue until commercially available starting materials]
+**RETROSYNTHETIC ANALYSIS:**
 
-Starting Materials: [List 2-4 commercially available compounds]
-Estimated Steps: [Number]
-Expected Yield: [Percentage]
-Key Challenges: [1-2 main issues]
+**Strategy Overview:**
+Briefly describe the overall synthetic strategy (convergent, linear, protecting group strategy, etc.)
 
-**ROUTE 2: [Alternative strategy]**
-[Same structure as Route 1]
+**Retrosynthetic Steps (work backwards from target to starting materials):**
 
-**ROUTE 3: [Third strategy]**
-[Same structure as Route 1]
+Step 1: Target Molecule → Precursor 1
+- Bond to disconnect: [describe specific bond]
+- Reaction type: [name of reaction, e.g., "Ester formation", "Friedel-Crafts acylation"]
+- Rationale: [why this disconnection makes sense]
+- Precursor structures: [describe or give SMILES if possible]
 
-Then provide:
-**RECOMMENDED ROUTE:** [Which one and why]
-**COMPLEXITY ASSESSMENT:** [Easy/Moderate/Difficult and rationale]
+Step 2: Precursor 1 → Precursor 2 + Precursor 3
+- Bond to disconnect: [specific bond]
+- Reaction type: [reaction name]
+- Rationale: [strategic reasoning]
+- Precursor structures: [describe]
 
-Be specific about reagents, conditions, and protecting groups where relevant."""
+Step 3: [Continue until reaching commercially available starting materials]
+
+**Starting Materials (commercially available):**
+1. [Compound name/SMILES]
+2. [Compound name/SMILES]
+3. [Additional materials]
+
+**Forward Synthesis (actual lab steps):**
+
+Step 1: Starting Material A + Starting Material B → Intermediate 1
+- Reagents: [specific reagents]
+- Conditions: [temperature, solvent, time]
+- Expected yield: [%]
+
+Step 2: Intermediate 1 → Intermediate 2
+- Reagents: [specific]
+- Conditions: [details]
+- Expected yield: [%]
+
+[Continue to target molecule]
+
+**Complexity Assessment:**
+- Overall difficulty: [Easy/Moderate/Difficult/Very Difficult]
+- Number of steps: [X]
+- Expected overall yield: [%]
+- Key challenges: [list 2-3 main synthetic challenges]
+- Estimated time: [weeks/months]
+
+**Alternative Routes (brief):**
+Route 2: [Quick description of alternative disconnection strategy]
+Route 3: [Another alternative]
+
+Provide detailed, practical information suitable for a synthetic chemist planning this synthesis."""
 
         retro_analysis = self._local_llm(retro_prompt)
         result["retrosynthetic_routes"] = retro_analysis

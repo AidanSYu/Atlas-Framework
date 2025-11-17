@@ -217,3 +217,31 @@
   font-size: 13px;
   line-height: 1.6;
 }
+
+.functional-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.functional-group-badge {
+  padding: 6px 14px;
+  background: linear-gradient(135deg, #4338ca 0%, #6366f1 100%);
+  color: white;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.retro-analysis {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 20px;
+  color: #1e293b;
+  font-size: 14px;
+}
+
+.retro-analysis pre {
+  margin: 0;
+}
