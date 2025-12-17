@@ -1,131 +1,161 @@
 /* My Data Tab Styles */
 .mydata-tab {
   min-height: 100%;
+  padding: 24px;
+}
+
+.tab-header {
+  margin-bottom: 32px;
+}
+
+.tab-header h2 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tab-header p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 15px;
 }
 
 .data-content {
-  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
 }
 
 /* Upload Zone */
 .upload-zone {
-  background: white;
-  border: 3px dashed #cbd5e0;
-  border-radius: 20px;
-  padding: 80px 40px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 2px dashed var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 60px 40px;
   text-align: center;
-  transition: all 0.3s ease;
-  margin-bottom: 40px;
+  transition: all var(--transition-fast);
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .upload-zone:hover {
-  border-color: #4338ca;
-  background: #f8fafc;
+  border-color: var(--accent-primary);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .upload-zone.drag-active {
-  border-color: #4338ca;
-  background: #eef2ff;
+  border-color: var(--accent-primary);
+  background: rgba(0, 122, 255, 0.05);
   border-style: solid;
 }
 
 .upload-icon {
   width: 64px;
   height: 64px;
-  color: #94a3b8;
-  margin: 0 auto 24px;
+  color: var(--text-tertiary);
+  margin-bottom: 24px;
 }
 
 .upload-zone h3 {
   margin: 0 0 12px;
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 700;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .upload-zone p {
   margin: 0 0 24px;
-  color: #64748b;
-  font-size: 15px;
+  color: var(--text-secondary);
+  font-size: 14px;
 }
 
-/* Data Categories */
+/* Categories Grid */
 .data-categories {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 24px;
-  margin-bottom: 40px;
 }
 
 .category-card {
-  background: white;
-  border: 2px solid #e2e8f0;
-  border-radius: 16px;
-  padding: 28px;
-  transition: all 0.3s ease;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 24px;
+  transition: all var(--transition-fast);
+  display: flex;
+  flex-direction: column;
 }
 
 .category-card:hover {
-  border-color: #4338ca;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08);
+  border-color: var(--accent-primary);
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .category-icon {
-  width: 56px;
-  height: 56px;
-  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
-  border-radius: 14px;
+  width: 48px;
+  height: 48px;
+  background: rgba(0, 122, 255, 0.1);
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #4338ca;
+  color: var(--accent-primary);
   margin-bottom: 20px;
+  border: 1px solid rgba(0, 122, 255, 0.2);
 }
 
 .category-icon svg {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
 }
 
 .category-card h4 {
   margin: 0 0 8px;
-  font-size: 18px;
-  font-weight: 700;
-  color: #1e293b;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .category-count {
   margin: 0 0 12px;
-  font-size: 24px;
-  font-weight: 800;
-  color: #4338ca;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent-primary);
 }
 
 .category-badge {
   display: inline-block;
-  padding: 4px 12px;
-  background: #f1f5f9;
-  color: #64748b;
-  border-radius: 6px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
+  align-self: flex-start;
 }
 
 /* AI Insights Preview */
 .ai-insights-preview {
-  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
-  border: 2px solid #c7d2fe;
-  border-radius: 16px;
-  padding: 32px;
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.1) 0%, rgba(0, 122, 255, 0.05) 100%);
+  border: 1px solid rgba(0, 122, 255, 0.2);
+  border-radius: var(--radius-lg);
+  padding: 24px;
   text-align: center;
+  position: relative;
+  overflow: hidden;
 }
 
 .ai-insights-preview h3 {
-  margin: 0 0 12px;
-  font-size: 20px;
-  font-weight: 700;
-  color: #4338ca;
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -139,6 +169,6 @@
 
 .ai-insights-preview p {
   margin: 0;
-  color: #4338ca;
-  font-size: 15px;
+  color: var(--text-secondary);
+  font-size: 14px;
 }

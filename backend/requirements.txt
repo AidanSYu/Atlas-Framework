@@ -5,6 +5,6 @@ python-multipart==0.0.12
 requests==2.32.3
 duckduckgo-search==6.3.7
 beautifulsoup4
-googlesearch-python==4.12.3
+googlesearch-python
 
 
