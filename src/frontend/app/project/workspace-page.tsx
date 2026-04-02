@@ -7,7 +7,7 @@ import LibrarySidebar from '@/components/LibrarySidebar';
 import PDFViewer from '@/components/PDFViewer';
 import TextViewer from '@/components/TextViewer';
 import KnowledgeGraph from '@/components/KnowledgeGraph';
-import DualAgentChat from '@/components/DualAgentChat';
+import ChatShell from '@/components/chat/ChatShell';
 import { ChatHistoryPanel } from '@/components/ChatHistoryPanel';
 import { OmniBar } from '@/components/OmniBar';
 import { AppMenuBar } from '@/components/AppMenuBar';
@@ -1030,7 +1030,7 @@ export default function ProjectWorkspacePage() {
                 </div>
                 {/* Chat shell */}
                 <div className="min-h-0 flex-1 overflow-hidden">
-                  <DualAgentChat
+                  <ChatShell
                     onCitationClick={handleCitationClick}
                     projectId={currentProject.id}
                     autoSubmitQuery={pendingOmniBarQuery}

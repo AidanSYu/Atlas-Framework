@@ -1,0 +1,19 @@
+Synthesis and supply constraints (mock)
+
+Ordering preferences:
+- Prefer make-on-demand catalog compounds with <= 4 week lead time.
+- Favor compounds with listed catalog IDs for rapid procurement.
+
+Synthesis complexity limits:
+- Target route length <= 4 steps for primary queue.
+- Avoid chemotypes requiring unstable intermediates or cryogenic-only handling.
+- Penalize compounds with no plausible retrosynthetic route.
+
+Scale assumptions:
+- Initial order: 5 mg per hit for biochemical confirmation.
+- Follow-up scale: 25-50 mg for in vitro and ADME panel.
+
+Budget constraints:
+- Per-compound soft cap: USD 300 for initial procurement.
+- High-priority exceptions allowed if potency and safety profile are strong.
+

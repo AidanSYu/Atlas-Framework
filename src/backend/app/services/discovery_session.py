@@ -8,6 +8,9 @@ from fastapi import HTTPException
 from app.core.database import get_session, Document, DiscoverySession
 from app.core.config import settings
 
+import logging
+logger = logging.getLogger(__name__)
+
 class PropertyConstraint(BaseModel):
     property: str
     operator: str
@@ -19,6 +22,7 @@ class ProjectTargetParams(BaseModel):
     propertyConstraints: List[PropertyConstraint]
     domainSpecificConstraints: Dict[str, Any]
     corpusDocumentIds: List[str]
+    projectId: Optional[str] = None
 
 class DiscoverySessionService:
     @staticmethod
@@ -48,6 +52,7 @@ class DiscoverySessionService:
             # Create session row
             epoch_id = str(uuid.uuid4())
             new_ds = DiscoverySession(
+                project_id=params.projectId,
                 target_params=params.model_dump()
             )
             session.add(new_ds)
@@ -85,12 +90,14 @@ class DiscoverySessionService:
             session.close()
 
     @staticmethod
-    def get_sessions() -> List[Dict[str, Any]]:
-        """List all discovery sessions from database and filesystem."""
+    def get_sessions(project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List discovery sessions from database, optionally filtered by project."""
         session = get_session()
         try:
-            # Get all sessions from database
-            db_sessions = session.query(DiscoverySession).order_by(DiscoverySession.created_at.desc()).all()
+            query = session.query(DiscoverySession).order_by(DiscoverySession.created_at.desc())
+            if project_id:
+                query = query.filter(DiscoverySession.project_id == project_id)
+            db_sessions = query.all()
 
             result = []
             for db_session in db_sessions:
@@ -209,6 +216,18 @@ class CorpusContext(BaseModel):
     summary: str = ""
 
 
+class ExperimentalFinding(BaseModel):
+    """A single wetlab result recorded back into the session."""
+    compound_id: str
+    smiles: Optional[str] = None
+    assay_type: str                  # e.g. "gag_priming", "cell_viability"
+    value: Optional[float] = None    # numeric result
+    units: Optional[str] = None
+    active: Optional[bool] = None    # True = hit, False = inactive
+    notes: Optional[str] = None
+    recorded_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
 class SessionMemoryData(BaseModel):
     """Shared memory state accessible to all agents in a discovery session.
 
@@ -225,6 +244,7 @@ class SessionMemoryData(BaseModel):
     agents_completed: List[str] = Field(default_factory=list)
     current_stage: str = "initializing"
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    experimental_findings: List[ExperimentalFinding] = Field(default_factory=list)
 
 
 class SessionMemoryService:
@@ -232,7 +252,7 @@ class SessionMemoryService:
 
     Session memory is persisted to disk in two formats:
     - session_memory.json: Machine-readable state for agent consumption
-    - SESSION_INIT.md: Human-readable initialization report
+    - SESSION_CONTEXT.md: Perpetual living context file read by all agents
     """
 
     @staticmethod
@@ -247,8 +267,8 @@ class SessionMemoryService:
 
     @staticmethod
     def _get_init_md_path(session_id: str) -> Path:
-        """Get path to SESSION_INIT.md."""
-        return SessionMemoryService._get_session_path(session_id) / "SESSION_INIT.md"
+        """Get path to SESSION_CONTEXT.md."""
+        return SessionMemoryService._get_session_path(session_id) / "SESSION_CONTEXT.md"
 
     @staticmethod
     def save_session_memory(session_id: str, memory_data: SessionMemoryData) -> None:
@@ -269,6 +289,7 @@ class SessionMemoryService:
         md_path = SessionMemoryService._get_init_md_path(session_id)
         md_content = SessionMemoryService._generate_markdown_report(memory_data)
         md_path.write_text(md_content, encoding="utf-8")
+        logger.info("Session memory saved for %s", session_id)
 
     @staticmethod
     def load_session_memory(session_id: str) -> Optional[SessionMemoryData]:
@@ -288,11 +309,16 @@ class SessionMemoryService:
         try:
             json_data = json.loads(json_path.read_text(encoding="utf-8"))
             return SessionMemoryData(**json_data)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to load session memory: {str(e)}"
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Corrupt session_memory.json for %s: %s", session_id, e
             )
+            return None
+        except Exception as e:
+            logger.warning(
+                "Failed to load session memory for %s: %s", session_id, e
+            )
+            return None
 
     @staticmethod
     def update_session_memory(
@@ -330,19 +356,25 @@ class SessionMemoryService:
 
     @staticmethod
     def _generate_markdown_report(memory: SessionMemoryData) -> str:
-        """Generate human-readable markdown initialization report.
+        """Generate SESSION_CONTEXT.md — the living context file shared by all agents.
+
+        This file is the single source of truth for the session. Agents read it at the
+        start of every run. It can be updated by agents or the researcher at any time.
 
         Args:
             memory: Session memory data
 
         Returns:
-            Markdown-formatted report
+            Markdown-formatted context document
         """
         lines = [
-            "# Discovery Session Initialization",
+            "# Session Context",
+            "",
+            "> This is a living document. Agents and researchers can update it at any time.",
+            "> All agents read this file at the start of every run.",
             "",
             f"**Session ID**: `{memory.session_id}`  ",
-            f"**Created**: {memory.initialized_at}  ",
+            f"**Initialized**: {memory.initialized_at}  ",
         ]
 
         if memory.domain:
@@ -350,33 +382,12 @@ class SessionMemoryService:
 
         lines.append("")
 
-        # Corpus Context
-        if memory.corpus_context:
-            lines.extend([
-                "## Corpus Context",
-                "",
-            ])
-
-            if memory.corpus_context.entities:
-                entities_str = ", ".join(memory.corpus_context.entities[:20])
-                lines.append(f"**Entities Found**: {entities_str}  ")
-
-            if memory.corpus_context.document_ids:
-                lines.append(f"**Documents Scanned**: {len(memory.corpus_context.document_ids)} documents  ")
-
-            if memory.corpus_context.summary:
-                lines.extend([
-                    "",
-                    "**Summary**:",
-                    "",
-                    memory.corpus_context.summary,
-                    "",
-                ])
-
-        # Research Goals
+        # Research Goals — most important section, first
         if memory.research_goals:
             lines.extend([
                 "## Research Goals",
+                "",
+                "These goals were extracted during the coordinator initialization conversation.",
                 "",
             ])
             for i, goal in enumerate(memory.research_goals, 1):
@@ -393,7 +404,30 @@ class SessionMemoryService:
                 lines.append(f"- **{key}**: {value}")
             lines.append("")
 
-        # Status
+        # Corpus Context
+        if memory.corpus_context:
+            lines.extend([
+                "## Corpus Context",
+                "",
+            ])
+
+            if memory.corpus_context.entities:
+                entities_str = ", ".join(memory.corpus_context.entities[:20])
+                lines.append(f"**Key Entities**: {entities_str}  ")
+
+            if memory.corpus_context.document_ids:
+                lines.append(f"**Documents Indexed**: {len(memory.corpus_context.document_ids)}  ")
+
+            if memory.corpus_context.summary:
+                lines.extend([
+                    "",
+                    "**Corpus Summary**:",
+                    "",
+                    memory.corpus_context.summary,
+                    "",
+                ])
+
+        # Session Status
         lines.extend([
             "## Session Status",
             "",
@@ -408,7 +442,9 @@ class SessionMemoryService:
             "",
             "---",
             "",
-            "*This initialization report is automatically generated and shared across all agents in this discovery session.*",
+            "## Agent Notes",
+            "",
+            "*(Agents append findings, hypotheses, and observations here across iterations.)*",
         ])
 
         return "\n".join(lines)

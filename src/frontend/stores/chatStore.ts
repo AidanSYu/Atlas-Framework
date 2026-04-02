@@ -139,10 +139,6 @@ function makeWelcomeMessage(mode: ChatMode): ChatMessage {
       "I'm **Cortex**, your research analysis agent. I can cross-reference documents, identify patterns, and discover connections across your research.",
     moe:
       "I'm the **Mixture of Experts (MoE) Supervisor**. I manage a team of specialized agents. Ask a complex research question, and I'll orchestrate the team.",
-    discovery:
-      "I'm the **Discovery OS**. I use deterministic chemistry tools to predict molecular properties, check toxicity, and search your literature.",
-    coordinator:
-      "I'm the **Discovery Coordinator**. I'll help bootstrap your research session by scanning your corpus and asking targeted questions about goals, constraints, and data.",
   };
   return {
     id: `welcome-${generateId()}`,

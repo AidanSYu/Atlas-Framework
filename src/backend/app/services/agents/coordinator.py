@@ -10,6 +10,7 @@ Uses MemorySaver checkpointing with thread_id = f"coordinator-{session_id}".
 """
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, TypedDict
 
@@ -30,7 +31,7 @@ _MD_PRIORITY = [
     "CONSTRAINTS.md",
     "HYPOTHESES.md",
     "RESEARCH_NOTES.md",
-    "SESSION_INIT.md",
+    "SESSION_CONTEXT.md",
     "FINDINGS.md",
 ]
 
@@ -69,7 +70,9 @@ def _read_session_notes(session_id: str, max_chars: int = 2000) -> str:
                 pass
 
     combined = "\n\n".join(parts)
-    return combined[:max_chars]
+    if len(combined) > max_chars:
+        combined = combined[:max_chars].rsplit("\n", 1)[0]
+    return combined
 
 
 # ============================================================
@@ -166,6 +169,228 @@ def _infer_domain_from_goals(goals: List[str]) -> str:
         return "biochemistry"
     else:
         return "general"
+
+
+def _build_fallback_analysis(
+    messages: List[Dict[str, Any]],
+    goals: List[str],
+    turn: int,
+    max_turns: int,
+) -> Dict[str, Any]:
+    """Build a deterministic fallback analysis when LLM output fails.
+
+    This prevents coordinator hard-failures from transient provider issues
+    (empty body, invalid JSON, network jitter). The fallback keeps the HITL
+    flow moving with conservative defaults and focused follow-up questions.
+    """
+    latest_user = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            latest_user = str(m.get("content", ""))
+            break
+
+    merged_goals = list(goals)
+    if latest_user and latest_user not in merged_goals:
+        merged_goals.append(latest_user)
+
+    goals_text = " ".join(merged_goals).lower()
+    has_domain = bool(
+        re.search(r"\b(chemistry|molecule|drug|material|protein|biochem|biology|catalyst)\b", goals_text)
+    )
+    has_target = bool(
+        re.search(r"\b(target|objective|against|inhibitor|bind|protein|enzyme|receptor)\b", goals_text)
+    )
+    has_constraints = bool(
+        re.search(r"\b(mw|logp|tpsa|constraint|range|<=|>=|<|>|limit)\b", goals_text)
+    )
+    has_forbidden = bool(
+        re.search(r"\b(forbidden|exclude|avoid|ban|not allow|without|none)\b", goals_text)
+    )
+    has_success = bool(
+        re.search(r"\b(success|metric|criteria|ic50|ec50|kd|affinity|yield|accuracy|threshold)\b", goals_text)
+    )
+
+    missing: List[str] = []
+    if not has_domain:
+        missing.append("research domain")
+    if not has_target:
+        missing.append("primary objective or target")
+    if not has_constraints:
+        missing.append("property constraints")
+    if not has_forbidden:
+        missing.append("forbidden substructures or exclusions")
+    if not has_success:
+        missing.append("success metrics")
+
+    ready = (len(missing) == 0) or (turn >= max_turns - 1)
+
+    if not missing:
+        question = "I have enough to proceed. Do you want to refine any constraints before execution?"
+        options = ["Proceed", "Refine constraints", "Add forbidden motifs", "Other..."]
+    elif missing[0] == "research domain":
+        question = "Which research domain should this discovery session target?"
+        options = ["Small-molecule chemistry", "Biochemistry/protein", "Materials science", "Other..."]
+    elif missing[0] == "primary objective or target":
+        question = "What is the primary target or objective for this run?"
+        options = ["Specific biological target", "Property optimization only", "Exploratory hypothesis generation", "Other..."]
+    elif missing[0] == "property constraints":
+        question = "Which constraints should we enforce (for example MW, LogP, toxicity, stability)?"
+        options = ["Use standard drug-like defaults", "I will provide numeric limits", "No hard constraints", "Other..."]
+    elif missing[0] == "forbidden substructures or exclusions":
+        question = "What should be excluded from candidates (substructures, liabilities, off-target risks)?"
+        options = ["No exclusions", "Exclude known toxicophores", "Exclude previous failed scaffolds", "Other..."]
+    else:
+        question = "How should we define success for this session?"
+        options = ["Potency threshold (e.g., IC50/Kd)", "Multi-objective score", "Top-N ranking only", "Other..."]
+
+    return {
+        "assessment": (
+            "Coordinator fallback mode: used deterministic analysis because the "
+            "orchestration model returned an invalid response."
+        ),
+        "new_goals_extracted": [latest_user] if latest_user else [],
+        "still_missing": missing,
+        "ready_to_proceed": ready,
+        "question": question,
+        "options": options,
+    }
+
+
+def _seed_living_md_files(
+    session_id: str,
+    goals: List[str],
+    corpus_summary: str,
+) -> None:
+    """Create initial CONSTRAINTS.md, HYPOTHESES.md, RESEARCH_NOTES.md from goals.
+
+    These are the living .md files that every agent reads before each run.
+    The coordinator seeds them from the HITL conversation. The researcher
+    can edit them between runs. Pipeline runs append FINDINGS.md.
+
+    Only writes files that don't already exist (never overwrites user edits).
+    """
+    from pathlib import Path
+    from app.core.config import settings
+
+    session_path = Path(settings.DATA_DIR) / "discovery" / session_id
+    session_path.mkdir(parents=True, exist_ok=True)
+
+    goals_lower = [g.lower() for g in goals]
+    goals_text = " ".join(goals_lower)
+
+    # --- CONSTRAINTS.md ---
+    constraints_path = session_path / "CONSTRAINTS.md"
+    if not constraints_path.exists():
+        constraint_goals = [
+            g for g in goals
+            if any(kw in g.lower() for kw in [
+                "mw", "logp", "tpsa", "constraint", "<=", ">=", "<", ">",
+                "limit", "range", "herg", "dili", "cyp", "solubility",
+                "weight", "rotatable", "donor", "acceptor", "lipinski",
+                "forbidden", "exclude", "avoid", "ban", "without",
+            ])
+        ]
+        other_goals = [g for g in goals if g not in constraint_goals]
+        lines = [
+            "# Constraints",
+            "",
+            "> Auto-generated by the Coordinator from your session setup conversation.",
+            "> Edit this file between pipeline runs to add, remove, or refine constraints.",
+            "> All agents read this file before every execution.",
+            "",
+        ]
+        if constraint_goals:
+            lines.append("## Extracted Constraints\n")
+            for g in constraint_goals:
+                lines.append(f"- {g}")
+            lines.append("")
+        if any(kw in goals_text for kw in ["forbidden", "exclude", "avoid", "ban", "without", "not "]):
+            lines.append("## Exclusions\n")
+            exclusion_goals = [
+                g for g in goals
+                if any(kw in g.lower() for kw in ["forbidden", "exclude", "avoid", "ban", "without"])
+            ]
+            for g in exclusion_goals:
+                lines.append(f"- {g}")
+            lines.append("")
+        if not constraint_goals:
+            lines.append("*(No specific constraints extracted yet. Add them here.)*\n")
+        try:
+            constraints_path.write_text("\n".join(lines), encoding="utf-8")
+            logger.info("Seeded CONSTRAINTS.md for session %s", session_id)
+        except OSError as exc:
+            logger.warning("Failed to seed CONSTRAINTS.md: %s", exc)
+
+    # --- HYPOTHESES.md ---
+    hypotheses_path = session_path / "HYPOTHESES.md"
+    if not hypotheses_path.exists():
+        hypothesis_goals = [
+            g for g in goals
+            if any(kw in g.lower() for kw in [
+                "hypothes", "predict", "expect", "should", "might",
+                "improve", "optimize", "better", "reduce", "increase",
+            ])
+        ]
+        lines = [
+            "# Hypotheses",
+            "",
+            "> Working hypotheses for this research session.",
+            "> Edit between pipeline runs to refine direction.",
+            "> Agents read this to guide iteration strategy.",
+            "",
+        ]
+        if hypothesis_goals:
+            for i, g in enumerate(hypothesis_goals, 1):
+                lines.append(f"**H{i}**: {g}\n")
+        else:
+            objective_goals = [g for g in goals if any(kw in g.lower() for kw in ["find", "identify", "discover", "target", "inhibitor", "candidate"])]
+            if objective_goals:
+                lines.append(f"**H1**: {objective_goals[0]}\n")
+            else:
+                lines.append("*(Add hypotheses here to guide the discovery pipeline.)*\n")
+        try:
+            hypotheses_path.write_text("\n".join(lines), encoding="utf-8")
+            logger.info("Seeded HYPOTHESES.md for session %s", session_id)
+        except OSError as exc:
+            logger.warning("Failed to seed HYPOTHESES.md: %s", exc)
+
+    # --- RESEARCH_NOTES.md ---
+    notes_path = session_path / "RESEARCH_NOTES.md"
+    if not notes_path.exists():
+        lines = [
+            "# Research Notes",
+            "",
+            "> Background knowledge for this session.",
+            "> Add literature references, domain context, or prior results here.",
+            "> All agents read this file before every execution.",
+            "",
+        ]
+        if corpus_summary and corpus_summary.strip():
+            lines.append("## Corpus Summary (auto-extracted)\n")
+            lines.append(corpus_summary[:1000])
+            lines.append("")
+        else:
+            lines.append("*(Upload documents and they will be summarized here automatically.)*\n")
+        try:
+            notes_path.write_text("\n".join(lines), encoding="utf-8")
+            logger.info("Seeded RESEARCH_NOTES.md for session %s", session_id)
+        except OSError as exc:
+            logger.warning("Failed to seed RESEARCH_NOTES.md: %s", exc)
+
+    # --- FINDINGS.md (empty header only) ---
+    findings_path = session_path / "FINDINGS.md"
+    if not findings_path.exists():
+        try:
+            findings_path.write_text(
+                "# Research Findings\n\n"
+                "Auto-updated log of all pipeline executions. "
+                "Agents read this file before planning each next iteration.\n"
+                "Researchers can annotate between runs.\n\n---\n\n",
+                encoding="utf-8",
+            )
+            logger.info("Seeded FINDINGS.md for session %s", session_id)
+        except OSError as exc:
+            logger.warning("Failed to seed FINDINGS.md: %s", exc)
 
 
 # ============================================================
@@ -311,22 +536,28 @@ Output JSON:
 }}"""
 
         try:
-            analysis = await llm_service.generate_constrained(
+            # Use orchestrate_constrained (DeepSeek) — the reasoning model is far
+            # more reliable for structured analysis than MiniMax (tool-calling model).
+            analysis = await llm_service.orchestrate_constrained(
                 prompt=prompt,
                 schema=COORDINATOR_ANALYSIS_SCHEMA,
                 system_prompt=system_prompt,
                 temperature=0.3,
-                max_tokens=512,
+                max_tokens=1024,
             )
         except Exception as exc:
-            logger.error("Coordinator LLM analysis failed: %s", exc)
-            # Re-raise so the error surfaces to the user as a clear SSE error event.
-            # Discovery OS requires both DeepSeek and MiniMax to be fully configured.
-            raise RuntimeError(
-                f"Coordinator analysis failed — Discovery OS requires both DeepSeek and MiniMax "
-                f"API keys to be configured. Check DEEPSEEK_API_KEY and MINIMAX_API_KEY in your "
-                f".env file. Original error: {exc}"
-            ) from exc
+            logger.warning(
+                "Coordinator DeepSeek analysis failed on turn %d; "
+                "continuing with fallback analysis: %s",
+                turn,
+                exc,
+            )
+            analysis = _build_fallback_analysis(
+                messages=messages,
+                goals=goals,
+                turn=turn,
+                max_turns=max_turns,
+            )
 
         # Merge new goals
         new_goals = analysis.get("new_goals_extracted", [])
@@ -360,7 +591,7 @@ Output JSON:
         # --- Execution resumes here after Command(resume=...) ---
 
         updated_messages = list(messages) + [
-            {"role": "assistant", "content": analysis["question"]},
+            {"role": "assistant", "content": analysis.get("question", "")},
             {"role": "user", "content": str(user_response)},
         ]
 
@@ -405,7 +636,7 @@ def _finalize_coordinator(
     corpus_entities: List[str],
     turn_count: int,
 ):
-    """Persist session memory, write SESSION_INIT.md, yield coordinator_complete.
+    """Persist session memory, write SESSION_CONTEXT.md, yield coordinator_complete.
 
     This is a regular generator (not async) so callers use ``yield from``.
     """
@@ -422,7 +653,7 @@ def _finalize_coordinator(
     except Exception as exc:
         logger.warning("Failed to persist coordinator goals to DB: %s", exc)
 
-    # Save session memory + SESSION_INIT.md
+    # Save session memory + SESSION_CONTEXT.md
     try:
         memory_data = SessionMemoryData(
             session_id=session_id,
@@ -447,6 +678,11 @@ def _finalize_coordinator(
         logger.info("Session memory saved for %s", session_id)
     except Exception as exc:
         logger.warning("Failed to save session memory: %s", exc)
+
+    # Seed the living .md knowledge substrate from extracted goals.
+    # These files are read by ALL agents at the start of every run.
+    # The researcher can edit them between runs to steer the session.
+    _seed_living_md_files(session_id, goals, corpus_summary)
 
     yield ("coordinator_complete", {
         "extracted_goals": goals,
@@ -504,7 +740,7 @@ async def run_coordinator_streaming(
     else:
         # BUGFIX: Emit a routing event so frontend runManager transitions past 'routing' state
         yield ("routing", {"brain": "discovery", "intent": "DISCOVERY"})
-        yield ("coordinator_thinking", {"content": "Scanning your research corpus..."})
+        yield ("coordinator_thinking", {"content": "Initializing Discovery Coordinator — scanning your research corpus for entities, targets, and prior findings..."})
         input_value = {
             "messages": [],
             "extracted_goals": [],
@@ -533,8 +769,16 @@ async def run_coordinator_streaming(
                     tracked_corpus_summary = update.get("corpus_summary", "")
                     tracked_corpus_entities = update.get("corpus_entities", [])
                     entity_count = len(tracked_corpus_entities)
+                    # Emit rich thinking with what was actually found
+                    parts = [f"Corpus scan complete — found **{entity_count}** key entities."]
+                    if tracked_corpus_entities:
+                        parts.append(f"Top entities: {', '.join(tracked_corpus_entities[:6])}")
+                    # Check if session .md notes were found
+                    if "RESEARCHER NOTES" in tracked_corpus_summary:
+                        parts.append("Read existing session notes (CONSTRAINTS.md, HYPOTHESES.md, etc.)")
+                    parts.append("Analyzing gaps — preparing first question...")
                     yield ("coordinator_thinking", {
-                        "content": f"Corpus scanned. Found {entity_count} key entities."
+                        "content": "\n".join(parts)
                     })
 
                 elif node_name == "analyze_and_ask":
@@ -560,6 +804,10 @@ async def run_coordinator_streaming(
                 goals = final_state.get("extracted_goals", [])
                 corpus_summary = final_state.get("corpus_summary", "") or tracked_corpus_summary
                 corpus_entities = final_state.get("corpus_entities", []) or tracked_corpus_entities
+
+                yield ("coordinator_thinking", {
+                    "content": f"Session complete — extracted {len(goals)} research goals. Writing session files..."
+                })
 
                 for evt in _finalize_coordinator(
                     session_id, project_id, goals,

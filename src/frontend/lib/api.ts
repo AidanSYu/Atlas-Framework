@@ -948,14 +948,17 @@ export const api = {
 
   // ---- Discovery Sessions (Golden Path) ----
 
-  async listDiscoverySessions(): Promise<Array<{
+  async listDiscoverySessions(projectId?: string): Promise<Array<{
     session_id: string;
     session_name: string;
     created_at: string | null;
     status: string;
     folder_exists: boolean;
   }>> {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/discovery/sessions`);
+    const url = projectId
+      ? `${API_BASE_URL}/api/discovery/sessions?project_id=${encodeURIComponent(projectId)}`
+      : `${API_BASE_URL}/api/discovery/sessions`;
+    const response = await fetchWithTimeout(url);
     return handleResponse(response);
   },
 
@@ -1043,6 +1046,8 @@ export const api = {
       name: string;
       description: string;
       loaded: boolean;
+      available: boolean;
+      unavailable_reason?: string | null;
       type: 'deterministic' | 'semantic';
       input_schema: any;
       output_schema: any;
@@ -1062,6 +1067,56 @@ export const api = {
       { method: 'POST' }
     );
     return handleResponse(response);
+  },
+
+  async getDiscoverySchema(): Promise<{ domain: string; target_schema: string[] }> {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/api/discovery/schema`);
+    return handleResponse(response);
+  },
+
+  async initializeDiscoverySession(params: {
+    domain: string;
+    objective: string;
+    propertyConstraints: any[];
+    domainSpecificConstraints: Record<string, any>;
+    corpusDocumentIds: string[];
+  }): Promise<{ session_id: string; session_name: string; epoch_id: string; folder_path: string; status: string }> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/discovery/initialize`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      },
+    );
+    return handleResponse(response);
+  },
+
+  streamDiscoveryChat(
+    sessionId: string,
+    message: string | null,
+    projectId: string,
+    onEvent: (event: NormalizedEvent) => void,
+    options?: {
+      action?: string;
+      smilesList?: string[];
+      signal?: AbortSignal;
+      timeout?: number;
+    },
+  ): Promise<void> {
+    const body: Record<string, any> = {
+      message,
+      project_id: projectId,
+    };
+    if (options?.action) body.action = options.action;
+    if (options?.smilesList) body.smiles_list = options.smilesList;
+
+    return streamSSE(
+      `${API_BASE_URL}/api/discovery/${sessionId}/chat`,
+      body,
+      onEvent,
+      { signal: options?.signal, timeout: options?.timeout ?? 600_000 },
+    );
   },
 };
 

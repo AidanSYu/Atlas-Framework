@@ -22,6 +22,7 @@ export interface ProjectTargetParams {
   propertyConstraints: PropertyConstraint[];
   domainSpecificConstraints: Record<string, any>;
   corpusDocumentIds: string[];
+  projectId?: string;
 }
 
 export interface PropertyConstraint {

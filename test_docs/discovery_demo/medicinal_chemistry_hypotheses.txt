@@ -1,0 +1,18 @@
+Hypotheses for next design cycle
+
+H1: Polar hinge-side vector
+- Adding a single polar vector near the hinge-facing region should improve solubility.
+- Keep TPSA under 120 to preserve permeability.
+
+H2: Controlled warhead reactivity
+- Acrylamide warheads remain acceptable if positioned to reduce off-target reactivity.
+- Vinyl sulfone variants may be screened but should receive a selectivity penalty.
+
+H3: Scaffold simplification
+- Reduce ring fusion complexity to improve synthetic accessibility and route flexibility.
+- Target SA score <= 6 where possible.
+
+H4: Safety-first ranking
+- Compounds with slightly weaker docking but cleaner ADMET should outrank risky compounds.
+- Composite ranking should prefer balanced profiles over single-metric winners.
+

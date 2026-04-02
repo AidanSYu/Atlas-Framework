@@ -41,7 +41,36 @@ export type NormalizedEvent =
   | { type: 'executor_awaiting_approval'; filename: string; preview: string; description: string }
   | { type: 'executor_executing'; filename: string; iteration: number }
   | { type: 'executor_artifact'; filename: string; artifactType: string }
-  | { type: 'executor_complete'; artifacts: string[]; summary: string };
+  | { type: 'executor_complete'; artifacts: string[]; summary: string }
+  | { type: 'executor_candidates'; candidates: Array<{
+      smiles: string;
+      name: string;
+      properties: Record<string, number>;
+      toxicity: { clean: boolean; alert_count: number } | null;
+    }> }
+  // Pipeline execution events (Chemistry Engine Plan)
+  | { type: 'pipeline_planning'; stages: string[]; moleculeCount: number }
+  | { type: 'pipeline_stage_start'; stage: string; index: number }
+  | { type: 'pipeline_stage_complete'; stage: string; index: number; resultCount: number }
+  | { type: 'pipeline_complete'; summary: string; artifacts: string[] }
+  // Unified Discovery Chat events
+  | { type: 'session_update'; stage: string; sessionId: string }
+  | { type: 'message'; content: string }
+  | { type: 'plan_proposed'; planId: string; summary: string; reasoning: string;
+      moleculeNotes: string; moleculeCount: number; iteration: number;
+      estimatedTotalSeconds: number; warnings: string[]; isDemoData: boolean;
+      stages: Array<{ stageId: number; plugin: string; description: string; estimatedSeconds: number }> }
+  | { type: 'tool_start'; stageId: number; plugin: string; description: string;
+      thinking?: string; totalStages: number }
+  | { type: 'tool_complete'; stageId: number; plugin: string; summary: string;
+      totalStages: number; candidatesSoFar?: number; error?: boolean;
+      stats?: Record<string, any> }
+  | { type: 'analysis'; keyFindings: string[];
+      topCandidates: Array<{ smiles: string; reasoning: string; composite_score?: number }>;
+      concerns: string[]; recommendations: Array<{ action: string; description: string; priority: string }>;
+      missingCapabilities: string[] }
+  | { type: 'recommendation'; recommendations?: Array<{ action: string; description: string; priority: string }>;
+      missingCapabilities?: string[] };
 
 export interface StreamSSEOptions {
   signal?: AbortSignal;
@@ -285,7 +314,97 @@ function mapRawEvent(eventType: string, data: any): NormalizedEvent {
         summary: data.summary || '',
       };
 
+    case 'executor_candidates':
+      return {
+        type: 'executor_candidates',
+        candidates: data.candidates || [],
+      };
+
+    // Pipeline execution events (Chemistry Engine Plan)
+    case 'pipeline_planning':
+      return { type: 'pipeline_planning', stages: data.stages || [], moleculeCount: data.molecule_count || 0 };
+    case 'pipeline_stage_start':
+      return { type: 'pipeline_stage_start', stage: data.stage || '', index: data.index || 0 };
+    case 'pipeline_stage_complete':
+      return { type: 'pipeline_stage_complete', stage: data.stage || '', index: data.index || 0, resultCount: data.result_count || 0 };
+    case 'pipeline_complete':
+      return { type: 'pipeline_complete', summary: data.summary || '', artifacts: data.artifacts || [] };
+
+    // Unified Discovery Chat events
+    case 'session_update':
+      return { type: 'session_update', stage: data.stage || '', sessionId: data.session_id || '' };
+
+    case 'message':
+      return { type: 'message', content: data.content || '' };
+
+    case 'plan_proposed':
+      // #region agent log
+      fetch('http://127.0.0.1:7272/ingest/f7210b22-43a9-4e37-b68b-7a5242f3a0fe',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'93fd50'},body:JSON.stringify({sessionId:'93fd50',location:'stream-adapter.ts:337',message:'plan_proposed raw data.warnings',data:{rawWarnings:data.warnings,rawType:typeof data.warnings,isArray:Array.isArray(data.warnings)},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      return {
+        type: 'plan_proposed',
+        planId: data.plan_id || '',
+        summary: data.summary || '',
+        reasoning: data.reasoning || '',
+        moleculeNotes: data.molecule_notes || '',
+        moleculeCount: data.molecule_count || 0,
+        iteration: data.iteration || 1,
+        estimatedTotalSeconds: data.estimated_total_seconds || 0,
+        warnings: data.warnings || [],
+        isDemoData: data.is_demo_data || false,
+        stages: (data.stages || []).map((s: any) => ({
+          stageId: s.stage_id || 0,
+          plugin: s.plugin || '',
+          description: s.description || '',
+          estimatedSeconds: s.estimated_seconds || 0,
+        })),
+      };
+
+    case 'tool_start':
+      return {
+        type: 'tool_start',
+        stageId: data.stage_id || 0,
+        plugin: data.plugin || '',
+        description: data.description || '',
+        totalStages: data.total_stages || 0,
+      };
+
+    case 'tool_complete':
+      return {
+        type: 'tool_complete',
+        stageId: data.stage_id || 0,
+        plugin: data.plugin || '',
+        summary: data.summary || '',
+        totalStages: data.total_stages || 0,
+        candidatesSoFar: data.candidates_so_far,
+        error: data.error,
+      };
+
+    case 'analysis':
+      return {
+        type: 'analysis',
+        keyFindings: data.key_findings || [],
+        topCandidates: (data.top_candidates || []).map((c: any) => ({
+          smiles: c.smiles || '', reasoning: c.reasoning || '',
+        })),
+        concerns: data.concerns || [],
+        recommendations: (data.recommendations || []).map((r: any) => ({
+          action: r.action || '', description: r.description || '', priority: r.priority || 'medium',
+        })),
+        missingCapabilities: data.missing_capabilities || [],
+      };
+
+    case 'recommendation':
+      return {
+        type: 'recommendation',
+        recommendations: data.recommendations?.map((r: any) => ({
+          action: r.action || '', description: r.description || '', priority: r.priority || 'medium',
+        })),
+        missingCapabilities: data.missing_capabilities,
+      };
+
     default:
+      console.warn(`[stream-adapter] Unknown SSE event type: ${eventType}`);
       return { type: 'progress', node: eventType, message: JSON.stringify(data) };
   }
 }

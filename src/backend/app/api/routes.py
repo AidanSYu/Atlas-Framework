@@ -229,6 +229,17 @@ class DiscoveryFeedbackResponse(BaseModel):
     updated_node_ids: List[str]
 
 
+# Discovery OS — Wetlab Loop
+class RecordResultRequest(BaseModel):
+    compound_id: str
+    smiles: Optional[str] = None
+    assay_type: str
+    value: Optional[float] = None
+    units: Optional[str] = None
+    active: Optional[bool] = None
+    notes: Optional[str] = None
+
+
 # Discovery OS — Domain Tools (B3)
 class CapabilityGapRequest(BaseModel):
     run_id: str
@@ -1766,10 +1777,10 @@ async def initialize_discovery_session(body: ProjectTargetParams):
 
 
 @router.get("/api/discovery/sessions")
-async def list_discovery_sessions():
-    """List all discovery sessions with metadata."""
+async def list_discovery_sessions(project_id: Optional[str] = Query(None)):
+    """List discovery sessions, filtered to the given project when project_id is provided."""
     try:
-        return DiscoverySessionService.get_sessions()
+        return DiscoverySessionService.get_sessions(project_id=project_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -1936,7 +1947,103 @@ async def coordinator_chat(session_id: str, body: CoordinatorChatRequest, reques
 
 
 # ============================================================
-# DISCOVERY OS — EXECUTOR AGENT  (Phase 5)
+# DISCOVERY OS — UNIFIED CHAT  (Chat-First Overhaul)
+# ============================================================
+
+class DiscoveryChatRequest(BaseModel):
+    message: Optional[str] = None
+    project_id: Optional[str] = None
+    action: Optional[str] = None  # "accept_plan", "reject_plan", "generate_plan"
+    smiles_list: Optional[List[str]] = None
+
+
+@router.post("/api/discovery/{session_id}/chat")
+async def discovery_chat(session_id: str, body: DiscoveryChatRequest, request: Request):
+    """Unified Discovery Chat — single endpoint for the entire session lifecycle.
+
+    Routes internally based on session state (setup, ready, executing, complete).
+    Supports free-form Q&A, plan generation, pipeline execution, and AI analysis.
+
+    SSE event types:
+      - session_update:    {"stage": "setup"|"ready"|"executing"|"complete"}
+      - thinking:          {"content": "..."}
+      - message:           {"content": "..."}
+      - coordinator_thinking / coordinator_question / coordinator_complete (setup phase)
+      - plan_proposed:     {"plan_id", "stages", "summary", "warnings", ...}
+      - tool_start:        {"stage_id", "plugin", "description"}
+      - tool_complete:     {"stage_id", "plugin", "summary"}
+      - pipeline_complete: {"stages_completed", "candidates", ...}
+      - analysis:          {"key_findings", "top_candidates", "concerns", "recommendations"}
+      - recommendation:    {"recommendations" | "missing_capabilities"}
+      - error:             {"message": "..."}
+      - cancelled:         {"message": "..."}
+    """
+    ensure_services()
+    if chat_service is None:
+        raise HTTPException(status_code=503, detail="Services not initialized.")
+
+    project_id = body.project_id or ""
+    if not project_id:
+        db = None
+        try:
+            from app.core.database import get_session as get_db_session, DiscoverySession
+            db = get_db_session()
+            ds = db.query(DiscoverySession).filter(DiscoverySession.id == session_id).first()
+            if ds and ds.target_params:
+                project_id = ds.target_params.get("project_id", "")
+        except Exception as exc:
+            logger.warning("Could not resolve project_id for session %s: %s", session_id, exc)
+        finally:
+            if db is not None:
+                db.close()
+
+    async def event_generator():
+        cancel_event = asyncio.Event()
+        monitor_task = asyncio.create_task(monitor_disconnect(request, cancel_event))
+        try:
+            from app.services.agents.discovery_chat import run_discovery_chat
+            from app.services.discovery_llm import get_discovery_llm_service
+
+            discovery_llm = get_discovery_llm_service()
+
+            async for event_type, event_data in run_discovery_chat(
+                session_id=session_id,
+                project_id=project_id,
+                user_message=body.message,
+                llm_service=discovery_llm,
+                retrieval_service=chat_service.retrieval_service,
+                action=body.action,
+                smiles_list=body.smiles_list,
+                cancel_event=cancel_event,
+            ):
+                if cancel_event.is_set():
+                    yield f"event: cancelled\ndata: {json.dumps({'message': 'Cancelled'})}\n\n"
+                    break
+                yield f"event: {event_type}\ndata: {json.dumps(event_data, default=str)}\n\n"
+        except Exception as e:
+            logger.error(f"Discovery chat error: {e}", exc_info=True)
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+        finally:
+            cancel_event.set()
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ============================================================
+# DISCOVERY OS — EXECUTOR AGENT  (Phase 5 — legacy)
 # ============================================================
 
 class ExecutorStartRequest(BaseModel):
@@ -2030,6 +2137,670 @@ async def executor_start(
 
 
 # ============================================================
+# DISCOVERY OS — PIPELINE EXECUTION  (Chemistry Engine Plan)
+# ============================================================
+
+class PipelineRunRequest(BaseModel):
+    smiles_list: List[str] = []
+    auto_run: bool = True
+
+
+@router.post("/api/discovery/{session_id}/pipeline/run")
+async def run_pipeline(session_id: str, body: PipelineRunRequest, request: Request):
+    """Execute the deterministic plugin pipeline for a discovery session.
+
+    This replaces the old LLM-based script sandbox with a hardened, rule-based
+    pipeline that selects and executes registered plugins in the correct order.
+
+    SSE event types:
+      - pipeline_planning: {"message": "...", "stage_count": N}
+      - pipeline_stage_start: {"stage": N, "plugin": "...", "description": "..."}
+      - pipeline_stage_complete: {"stage": N, "plugin": "...", "summary": "..."}
+      - pipeline_complete: {"stages_completed": N, "final_summary": "...", "results": {...}}
+      - error: {"message": "..."}
+    """
+    ensure_services()
+
+    async def event_generator():
+        cancel_event = asyncio.Event()
+        monitor_task = asyncio.create_task(monitor_disconnect(request, cancel_event))
+        try:
+            from app.services.discovery_session import SessionMemoryService
+            from app.services.agents.pipeline_planner import build_pipeline, PipelinePlan
+            from app.services.plugins import get_plugin_manager
+
+            memory = SessionMemoryService.load_session_memory(session_id)
+            if memory is None:
+                yield f"event: error\ndata: {json.dumps({'message': 'Session memory not found. Run coordinator first.'})}\n\n"
+                return
+
+            memory_dict = memory.model_dump()
+            pm = get_plugin_manager()
+            available = pm.get_registered_names()
+
+            plan = build_pipeline(memory_dict, available)
+
+            yield f"event: pipeline_planning\ndata: {json.dumps({'message': plan.reasoning, 'stage_count': len(plan.stages), 'iteration': getattr(plan, 'iteration', 1), 'has_prior_findings': bool(getattr(plan, 'prior_findings_digest', ''))})}\n\n"
+
+            if cancel_event.is_set():
+                return
+
+            smiles_list = body.smiles_list
+            if not smiles_list:
+                smiles_list = _extract_smiles_from_corpus(session_id)
+            if not smiles_list:
+                # No SMILES in corpus — run explicit LLM candidate proposal stage
+                yield f"event: pipeline_stage_start\ndata: {json.dumps({'stage': 0, 'plugin': 'propose_candidates', 'description': 'Proposing candidate molecules from corpus knowledge and research goals...'})}\n\n"
+                llm_svc = chat_service.retrieval_service.llm_service if chat_service else None
+                if llm_svc is None:
+                    yield f"event: error\ndata: {json.dumps({'message': 'No SMILES in corpus and LLM service unavailable. Provide SMILES via smiles_list or upload documents containing SMILES strings.'})}\n\n"
+                    return
+                smiles_list = await _propose_candidates_from_memory(session_id, llm_svc)
+                if not smiles_list:
+                    yield f"event: error\ndata: {json.dumps({'message': 'Could not propose candidates: session has no research goals or corpus context. Complete the setup conversation first.'})}\n\n"
+                    return
+                yield f"event: pipeline_stage_complete\ndata: {json.dumps({'stage': 0, 'plugin': 'propose_candidates', 'summary': f'Proposed {len(smiles_list)} candidate molecules from corpus knowledge.'})}\n\n"
+
+            stage_data: dict = {"smiles_list": smiles_list}
+            stage_results = []
+
+            for stage in plan.stages:
+                if cancel_event.is_set():
+                    break
+
+                yield f"event: pipeline_stage_start\ndata: {json.dumps({'stage': stage.stage_id, 'plugin': stage.plugin, 'description': stage.description})}\n\n"
+
+                try:
+                    merged_kwargs = {**stage.config, **stage_data}
+                    result = await pm.invoke(stage.plugin, **merged_kwargs)
+
+                    if isinstance(result, dict):
+                        if "molecules" in result:
+                            stage_data["molecules"] = result["molecules"]
+                            stage_data["smiles_list"] = [
+                                m.get("smiles", "") for m in result["molecules"] if m.get("valid", True)
+                            ]
+                        if "predictions" in result:
+                            stage_data["predictions"] = result["predictions"]
+                        if "scores" in result:
+                            stage_data["scores"] = result["scores"]
+                        if "properties" in result:
+                            stage_data["properties"] = result["properties"]
+                        if "toxicity_results" in result:
+                            stage_data["toxicity_results"] = result["toxicity_results"]
+
+                    summary = result.get("summary", f"Stage {stage.stage_id} complete") if isinstance(result, dict) else str(result)
+                    stage_results.append({"stage": stage.stage_id, "plugin": stage.plugin, "result": result, "summary": summary})
+
+                    yield f"event: pipeline_stage_complete\ndata: {json.dumps({'stage': stage.stage_id, 'plugin': stage.plugin, 'summary': summary})}\n\n"
+
+                    # Push live candidates to the UCSO table after data-producing stages
+                    candidates = _build_candidates_for_frontend(stage_data)
+                    if candidates:
+                        yield f"event: executor_candidates\ndata: {json.dumps({'candidates': candidates})}\n\n"
+
+                except Exception as exc:
+                    logger.error("Pipeline stage %s failed: %s", stage.plugin, exc, exc_info=True)
+                    stage_results.append({"stage": stage.stage_id, "plugin": stage.plugin, "error": str(exc)})
+                    yield f"event: pipeline_stage_complete\ndata: {json.dumps({'stage': stage.stage_id, 'plugin': stage.plugin, 'summary': f'ERROR: {exc}'})}\n\n"
+
+            _save_pipeline_results(session_id, plan, stage_results, stage_data)
+
+            final_candidates = _build_candidates_for_frontend(stage_data)
+            final_summary = f"Pipeline completed {len(stage_results)}/{len(plan.stages)} stages. {len(final_candidates)} candidates ranked."
+            yield f"event: pipeline_complete\ndata: {json.dumps({'stages_completed': len(stage_results), 'final_summary': final_summary, 'candidates': final_candidates, 'stage_results': [{k: v for k, v in sr.items() if k != 'result'} for sr in stage_results]})}\n\n"
+
+        except Exception as e:
+            logger.error("Pipeline execution error: %s", e, exc_info=True)
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+        finally:
+            cancel_event.set()
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+def _build_candidates_for_frontend(stage_data: dict) -> List[dict]:
+    """Build candidate objects for the UCSO table from accumulated pipeline data.
+
+    Merges molecule identity, properties, toxicity, ADMET predictions, and SA scores
+    into a single flat candidate list that the DiscoveryWorkbench can render.
+
+    Stage data keys consumed:
+      molecules       — from standardize_smiles (list of {smiles, compound_id, valid, inchikey})
+      properties      — from predict_properties batch mode (list of {smiles, MolWt, LogP, ...})
+      toxicity_results— from check_toxicity batch mode (list of {smiles, clean, alert_count, ...})
+      predictions     — from predict_admet (list of {smiles, herg_risk, dili_risk, ...})
+      scores          — from score_synthesizability (list of {smiles, sa_score, feasible})
+    """
+    molecules = stage_data.get("molecules", [])
+
+    # Build lookup dicts keyed by canonical SMILES
+    prop_by_smiles = {
+        p["smiles"]: p
+        for p in stage_data.get("properties", [])
+        if isinstance(p, dict) and p.get("smiles")
+    }
+    tox_by_smiles = {
+        t["smiles"]: t
+        for t in stage_data.get("toxicity_results", [])
+        if isinstance(t, dict) and t.get("smiles")
+    }
+    pred_by_smiles = {
+        p["smiles"]: p
+        for p in stage_data.get("predictions", [])
+        if isinstance(p, dict) and p.get("smiles")
+    }
+    score_by_smiles = {
+        s["smiles"]: s
+        for s in stage_data.get("scores", [])
+        if isinstance(s, dict) and s.get("smiles")
+    }
+
+    candidates = []
+    for mol in molecules:
+        if not isinstance(mol, dict):
+            continue
+        smi = mol.get("smiles", "")
+        if not smi:
+            continue
+
+        prop = prop_by_smiles.get(smi, {})
+        tox = tox_by_smiles.get(smi, {})
+        pred = pred_by_smiles.get(smi, {})
+        sa = score_by_smiles.get(smi, {})
+
+        # Properties — populated from batch predict_properties
+        properties = {
+            "MolWt": prop.get("MolWt"),
+            "LogP": prop.get("LogP"),
+            "TPSA": prop.get("TPSA"),
+            "QED": prop.get("QED"),
+            "HBD": prop.get("HBD"),
+            "HBA": prop.get("HBA"),
+            "Lipinski": prop.get("Lipinski"),
+        }
+
+        # Toxicity — populated from batch check_toxicity
+        if tox:
+            toxicity = {
+                "clean": tox.get("clean", True),
+                "alert_count": tox.get("alert_count", 0),
+                "pains_hits": tox.get("pains_hits", 0),
+                "alerts": [a.get("name") for a in tox.get("structural_alerts", [])],
+            }
+        else:
+            toxicity = None
+
+        candidates.append({
+            "smiles": smi,
+            "compound_id": mol.get("compound_id", ""),
+            "inchikey": mol.get("inchikey", ""),
+            "source": mol.get("source", "unknown"),
+            "valid": mol.get("valid", True),
+            "properties": properties,
+            "toxicity": toxicity,
+            "admet": {
+                "herg_risk": pred.get("herg_risk", "N/A"),
+                "dili_risk": pred.get("dili_risk", "N/A"),
+                "caco2": pred.get("caco2_permeability", "N/A"),
+                "cyp3a4": pred.get("cyp3a4_inhibition", "N/A"),
+                "overall": pred.get("overall_risk", "N/A"),
+            } if pred else None,
+            "sa_score": sa.get("sa_score"),
+            "feasible": sa.get("feasible"),
+        })
+
+    return candidates
+
+
+def _extract_smiles_from_corpus(session_id: str) -> List[str]:
+    """Extract SMILES from session corpus document chunks via regex + RDKit validation.
+
+    Queries DocumentChunk.text for the session's corpusDocumentIds, then applies
+    a SMILES pattern and validates every hit through RDKit.  Returns [] (not demo
+    data) when nothing is found so the caller can fall back to LLM generation.
+    """
+    import re
+
+    # ------------------------------------------------------------------
+    # 1. Load corpus document IDs from the DiscoverySession row
+    # ------------------------------------------------------------------
+    doc_ids: list = []
+    try:
+        from app.core.database import get_session as _get_db, DiscoverySession
+        db = _get_db()
+        try:
+            ds = db.query(DiscoverySession).filter(
+                DiscoverySession.id == session_id
+            ).first()
+            if ds and ds.target_params:
+                doc_ids = ds.target_params.get("corpusDocumentIds") or []
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("Failed to load DiscoverySession for SMILES extraction: %s", exc)
+
+    # Also check session_memory in case doc IDs were stored there
+    if not doc_ids:
+        try:
+            from app.services.discovery_session import SessionMemoryService
+            mem = SessionMemoryService.load_session_memory(session_id)
+            if mem and mem.corpus_context:
+                doc_ids = mem.corpus_context.document_ids or []
+        except Exception as exc:
+            logger.warning("Failed to load session_memory for doc IDs: %s", exc)
+
+    if not doc_ids:
+        logger.info("No corpus doc IDs for session %s — corpus extraction skipped.", session_id)
+        return []
+
+    # ------------------------------------------------------------------
+    # 2. Fetch all text chunks for those documents
+    # ------------------------------------------------------------------
+    all_text = ""
+    try:
+        from app.core.database import get_session as _get_db2, DocumentChunk
+        db2 = _get_db2()
+        try:
+            rows = db2.query(DocumentChunk.text).filter(
+                DocumentChunk.document_id.in_(doc_ids)
+            ).all()
+            all_text = " ".join(r.text for r in rows if r.text)
+        finally:
+            db2.close()
+    except Exception as exc:
+        logger.warning("Failed to query DocumentChunks: %s", exc)
+        return []
+
+    if not all_text:
+        return []
+
+    # ------------------------------------------------------------------
+    # 3. Regex: pull SMILES-like tokens (validate with RDKit below)
+    # ------------------------------------------------------------------
+    # Pattern: starts with a SMILES-valid heavy-atom char, min 6 chars total,
+    # composed only of characters legal in SMILES.  False positives are
+    # eliminated by RDKit validation in the next step.
+    _SMILES_RE = re.compile(
+        r"(?<![A-Za-z])"
+        r"([BCNOPSFIbcnosp*][A-Za-z0-9@+\-\[\]()=#$\/\\\.%:]{5,})"
+        r"(?![A-Za-z])"
+    )
+    raw_candidates = [m.group(1) for m in _SMILES_RE.finditer(all_text)]
+
+    if not raw_candidates:
+        logger.info(
+            "No SMILES-like tokens in corpus for session %s (%d chars scanned).",
+            session_id, len(all_text),
+        )
+        return []
+
+    # ------------------------------------------------------------------
+    # 4. RDKit validation and deduplication
+    # ------------------------------------------------------------------
+    valid_smiles: List[str] = []
+    try:
+        from rdkit import Chem
+        seen_keys: set = set()
+        for smi in raw_candidates:
+            try:
+                mol = Chem.MolFromSmiles(smi)
+                if mol is None:
+                    continue
+                canonical = Chem.MolToSmiles(mol, canonical=True)
+                ikey = Chem.MolToInchiKey(mol)
+                if ikey and ikey not in seen_keys:
+                    seen_keys.add(ikey)
+                    valid_smiles.append(canonical)
+            except Exception:
+                pass
+    except ImportError:
+        # RDKit unavailable — return the raw regex hits (less reliable)
+        seen: set = set()
+        for smi in raw_candidates:
+            if smi not in seen:
+                seen.add(smi)
+                valid_smiles.append(smi)
+
+    logger.info(
+        "Corpus SMILES extraction for session %s: %d raw → %d valid.",
+        session_id, len(raw_candidates), len(valid_smiles),
+    )
+    return valid_smiles
+
+
+async def _propose_candidates_from_memory(
+    session_id: str,
+    llm_service,
+) -> List[str]:
+    """Propose candidate SMILES via LLM from session research goals + corpus context.
+
+    This is the explicit 'novel discovery' step: the researcher's goals and literature
+    knowledge are distilled into concrete candidate molecules for computational screening.
+    Called when no SMILES are literally present in the uploaded corpus documents.
+
+    Returns:
+        List of RDKit-validated canonical SMILES (empty list if proposal fails).
+    """
+    from app.services.discovery_session import SessionMemoryService
+
+    memory = SessionMemoryService.load_session_memory(session_id)
+    if memory is None:
+        logger.warning("_propose_candidates_from_memory: no session memory for %s", session_id)
+        return []
+
+    has_goals = bool(memory.research_goals)
+    has_corpus = bool(memory.corpus_context and (
+        memory.corpus_context.summary or memory.corpus_context.entities
+    ))
+    if not has_goals and not has_corpus:
+        logger.warning(
+            "_propose_candidates_from_memory: session %s has no goals or corpus context", session_id
+        )
+        return []
+
+    goals_text = "\n".join(f"- {g}" for g in memory.research_goals) if memory.research_goals else "Not specified"
+    domain = memory.domain or "scientific research"
+    corpus_summary = ""
+    entities_text = ""
+    if memory.corpus_context:
+        corpus_summary = memory.corpus_context.summary or ""
+        entities = memory.corpus_context.entities or []
+        if entities:
+            entities_text = ", ".join(str(e) for e in entities[:30])
+
+    # Build constraints text — support both dict and list formats
+    if isinstance(memory.constraints, dict):
+        constraints_lines = [f"- {k}: {v}" for k, v in memory.constraints.items()]
+    elif isinstance(memory.constraints, list):
+        constraints_lines = [f"- {c}" for c in memory.constraints]
+    else:
+        constraints_lines = []
+    constraints_text = "\n".join(constraints_lines) if constraints_lines else "None specified"
+
+    # Extract scaffold hint from goals (domain-agnostic — LLM reads the goals and infers)
+    scaffold_hint = ""
+    if memory.research_goals:
+        goal_str = " ".join(memory.research_goals).lower()
+        if "scaffold" in goal_str or "core" in goal_str or "motif" in goal_str:
+            scaffold_hint = (
+                "\n## Scaffold Requirement\n"
+                "The research goals reference a specific scaffold or core structure. "
+                "Every proposed candidate MUST contain that scaffold. "
+                "Verify this before providing your answer."
+            )
+
+    # Include any prior wetlab findings to guide the next round
+    findings_text = ""
+    if memory.experimental_findings:
+        lines = []
+        for f in memory.experimental_findings:
+            status = "ACTIVE" if f.active else ("INACTIVE" if f.active is False else "UNTESTED")
+            val = f"{f.value} {f.units or ''}".strip() if f.value is not None else ""
+            lines.append(
+                f"  - {f.compound_id} ({f.assay_type}): {val} [{status}]"
+                + (f" — {f.notes}" if f.notes else "")
+            )
+        findings_text = (
+            "\n## Prior Experimental Results\n"
+            "Use these to guide structural refinement — propose analogues of active hits "
+            "and avoid structural classes of inactive compounds.\n"
+            + "\n".join(lines)
+        )
+
+    prompt = f"""You are an expert computational chemist and scientific researcher.
+
+Based on the research context below, propose 5-10 candidate molecules for computational screening.
+Propose realistic, novel molecules that directly advance the stated research goals.
+Every SMILES string must be chemically valid. Prefer structural diversity within the required scaffold class.
+
+## Research Domain
+{domain}
+
+## Research Goals
+{goals_text}
+
+## Literature Context
+{corpus_summary[:800] if corpus_summary else 'No corpus summary available.'}
+
+## Known Entities from Literature
+{entities_text if entities_text else 'None extracted'}
+
+## Property Constraints
+{constraints_text}
+{scaffold_hint}{findings_text}
+
+For each candidate provide: a valid SMILES string, a short name, and a one-sentence rationale
+explaining how it addresses the research goals."""
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "candidates": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "smiles": {"type": "string", "description": "Valid SMILES string for the molecule"},
+                        "name": {"type": "string", "description": "Common or systematic name"},
+                        "rationale": {"type": "string", "description": "One-sentence rationale for proposing this molecule"},
+                    },
+                    "required": ["smiles", "name", "rationale"],
+                },
+                "description": "List of 5-10 proposed candidate molecules",
+            },
+            "strategy": {
+                "type": "string",
+                "description": "Overall design strategy — scaffold classes chosen and why",
+            },
+        },
+        "required": ["candidates", "strategy"],
+    }
+
+    try:
+        result = await llm_service.orchestrate_constrained(
+            prompt=prompt,
+            schema=schema,
+            system_prompt=(
+                "You are an expert medicinal chemist. Propose novel, realistic drug candidates "
+                "as valid SMILES strings. Every SMILES must be chemically valid."
+            ),
+            temperature=0.6,
+            max_tokens=1500,
+        )
+    except Exception as exc:
+        logger.error("LLM candidate proposal failed for session %s: %s", session_id, exc)
+        return []
+
+    raw_candidates = result.get("candidates", [])
+    if not raw_candidates:
+        logger.warning("LLM returned no candidates for session %s", session_id)
+        return []
+
+    validated: List[str] = []
+    try:
+        from rdkit import Chem
+        seen_keys: set = set()
+        for c in raw_candidates:
+            smi = c.get("smiles", "").strip() if isinstance(c, dict) else str(c).strip()
+            if not smi:
+                continue
+            mol = Chem.MolFromSmiles(smi)
+            if mol is None:
+                continue
+            canonical = Chem.MolToSmiles(mol, canonical=True)
+            try:
+                ikey = Chem.MolToInchiKey(mol)
+            except Exception:
+                ikey = canonical
+            if ikey and ikey not in seen_keys:
+                seen_keys.add(ikey)
+                validated.append(canonical)
+    except ImportError:
+        validated = [
+            c.get("smiles", "").strip()
+            for c in raw_candidates
+            if isinstance(c, dict) and c.get("smiles", "").strip()
+        ]
+
+    logger.info(
+        "LLM proposed %d candidates (%d validated) for session %s. Strategy: %s",
+        len(raw_candidates), len(validated), session_id,
+        result.get("strategy", "")[:120],
+    )
+    return validated
+
+
+def _save_pipeline_results(
+    session_id: str,
+    plan: Any,
+    stage_results: List[dict],
+    final_data: dict,
+):
+    """Save pipeline results and update the living .md knowledge substrate.
+
+    This is the core of the compounding loop:
+    1. pipeline_results.json — machine-readable snapshot (overwritten per run)
+    2. FINDINGS.md — APPENDED, never overwritten. Accumulates across iterations.
+    3. session_memory.json — updated with latest stage, iteration count, findings digest
+    4. SESSION_CONTEXT.md — regenerated with updated session_memory
+    """
+    from pathlib import Path
+    from datetime import datetime
+    from app.core.config import settings
+
+    session_path = Path(settings.DATA_DIR) / "discovery" / session_id
+    session_path.mkdir(parents=True, exist_ok=True)
+    generated = session_path / "generated"
+    generated.mkdir(exist_ok=True)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    # --- 1. Save machine-readable pipeline_results.json (latest run) ---
+    results_path = generated / "pipeline_results.json"
+    try:
+        serializable = {
+            "plan_id": plan.plan_id if hasattr(plan, "plan_id") else "",
+            "timestamp": timestamp,
+            "stages_completed": len(stage_results),
+            "stage_summaries": [
+                {k: v for k, v in sr.items() if k != "result"}
+                for sr in stage_results
+            ],
+            "molecules": final_data.get("molecules", [])[:50],
+            "predictions": final_data.get("predictions", [])[:50],
+            "scores": final_data.get("scores", [])[:50],
+        }
+        results_path.write_text(json.dumps(serializable, indent=2, default=str), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to save pipeline results: %s", exc)
+
+    # --- 2. APPEND to FINDINGS.md (actionable research report) ---
+    findings_path = session_path / "FINDINGS.md"
+    try:
+        header_needed = not findings_path.exists()
+        existing_text = ""
+        if not header_needed:
+            existing_text = findings_path.read_text(encoding="utf-8")
+        iteration = existing_text.count("## Run ") + 1
+
+        candidates = _build_candidates_for_frontend(final_data)
+
+        with open(findings_path, "a", encoding="utf-8") as f:
+            if header_needed:
+                f.write("# Discovery Findings\n\n")
+                f.write("Each run appends results. Agents read this before every iteration.\n\n---\n\n")
+
+            f.write(f"## Run {iteration} — {timestamp}\n\n")
+
+            # Pipeline summary
+            ok_count = sum(1 for sr in stage_results if "error" not in sr)
+            f.write(f"**Pipeline**: {ok_count}/{len(stage_results)} stages completed  \n")
+            f.write(f"**Input**: {len(final_data.get('smiles_list', []))} SMILES  \n")
+            f.write(f"**Output**: {len(candidates)} ranked candidates  \n\n")
+
+            # Actionable hit list
+            clean = [c for c in candidates if c.get("valid", True) and (
+                (c.get("toxicity") and c["toxicity"].get("clean")) or
+                (c.get("admet") and c["admet"].get("overall") == "LOW")
+            )]
+            flagged = [c for c in candidates if c not in clean]
+
+            if clean:
+                f.write(f"### Candidates to advance ({len(clean)})\n\n")
+                f.write("These passed safety filters and are ready for synthesis planning or procurement.\n\n")
+                f.write("| # | SMILES | MW | LogP | SA | hERG | ADMET | Action |\n")
+                f.write("|---|--------|-----|------|-----|------|-------|--------|\n")
+                for i, c in enumerate(clean[:20], 1):
+                    mw = f"{c['properties'].get('MolWt', '-')}" if c.get("properties") else "-"
+                    logp = f"{c['properties'].get('LogP', '-')}" if c.get("properties") else "-"
+                    sa = f"{c.get('sa_score', '-')}"
+                    herg = c.get("admet", {}).get("herg_risk", "-") if c.get("admet") else "-"
+                    admet = c.get("admet", {}).get("overall", "-") if c.get("admet") else "-"
+                    feasible = c.get("feasible")
+                    action = "Order/synthesize" if feasible else "Check route"
+                    f.write(f"| {i} | `{c['smiles'][:40]}` | {mw} | {logp} | {sa} | {herg} | {admet} | {action} |\n")
+                f.write("\n")
+
+            if flagged:
+                f.write(f"### Flagged candidates ({len(flagged)})\n\n")
+                f.write("These failed one or more filters. Review before advancing.\n\n")
+                for c in flagged[:10]:
+                    reasons = []
+                    if c.get("toxicity") and not c["toxicity"].get("clean"):
+                        reasons.append(f"{c['toxicity'].get('alert_count', '?')} tox alerts")
+                    if c.get("admet") and c["admet"].get("overall") not in ("LOW", "N/A", None):
+                        reasons.append(f"ADMET: {c['admet'].get('overall', '?')}")
+                    if c.get("sa_score") and float(c.get("sa_score", 0)) > 6:
+                        reasons.append(f"SA={c['sa_score']} (hard to synthesize)")
+                    f.write(f"- `{c['smiles'][:50]}` — {', '.join(reasons) or 'review needed'}\n")
+                f.write("\n")
+
+            # Next steps
+            f.write("### Recommended next steps\n\n")
+            if clean:
+                f.write(f"1. **Procurement**: {len(clean)} clean candidates ready. Check catalog availability.\n")
+                f.write(f"2. **Synthesis planning**: Run retrosynthesis on top hits to confirm routes.\n")
+            if flagged:
+                f.write(f"3. **Iterate**: Edit CONSTRAINTS.md to tighten filters, then re-run pipeline.\n")
+            if not clean and not flagged:
+                f.write("1. **Expand library**: Upload more SMILES or relax constraints in CONSTRAINTS.md.\n")
+            f.write(f"4. **Annotate**: Edit this file or HYPOTHESES.md to refine direction for the next iteration.\n\n")
+            f.write("---\n\n")
+    except Exception as exc:
+        logger.warning("Failed to append to FINDINGS.md: %s", exc)
+
+    # --- 3. Update session_memory.json (compounding state) ---
+    try:
+        from app.services.discovery_session import SessionMemoryService
+        memory = SessionMemoryService.load_session_memory(session_id)
+        if memory:
+            meta = memory.metadata or {}
+            meta["last_pipeline_run"] = timestamp
+            meta["pipeline_iterations"] = meta.get("pipeline_iterations", 0) + 1
+            meta["last_stages_completed"] = len(stage_results)
+            meta["last_molecule_count"] = len(final_data.get("molecules", []))
+            memory.metadata = meta
+
+            if "pipeline_executor" not in memory.agents_completed:
+                memory.agents_completed.append("pipeline_executor")
+            memory.current_stage = "pipeline_complete"
+
+            SessionMemoryService.save_session_memory(session_id, memory)
+    except Exception as exc:
+        logger.warning("Failed to update session_memory after pipeline: %s", exc)
+
+
+# ============================================================
 # DISCOVERY OS — DOMAIN TOOLS  (B3)
 # ============================================================
 
@@ -2053,6 +2824,66 @@ async def domain_render(
         svg = render_placeholder_svg(data, type)
 
     return Response(content=svg, media_type="image/svg+xml")
+
+
+@router.post("/api/discovery/{session_id}/record_result")
+async def record_experimental_result(session_id: str, body: RecordResultRequest):
+    """Record a wetlab result back into session memory (closes the design-make-test-learn loop).
+
+    The finding is appended to session_memory.experimental_findings and written to
+    FINDINGS.md so the next pipeline iteration sees it as additional context.
+    Active hits drive the next round of candidate proposal toward structure-activity
+    refinement; inactives are used to tighten exclusion constraints.
+    """
+    from app.services.discovery_session import SessionMemoryService, ExperimentalFinding
+    from pathlib import Path
+    from datetime import datetime
+
+    memory = SessionMemoryService.load_session_memory(session_id)
+    if memory is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    finding = ExperimentalFinding(
+        compound_id=body.compound_id,
+        smiles=body.smiles,
+        assay_type=body.assay_type,
+        value=body.value,
+        units=body.units,
+        active=body.active,
+        notes=body.notes,
+    )
+    memory.experimental_findings.append(finding)
+    SessionMemoryService.save_session_memory(session_id, memory)
+
+    # Append to FINDINGS.md for agent visibility
+    try:
+        session_path = Path(settings.DATA_DIR) / "discovery" / session_id
+        findings_path = session_path / "FINDINGS.md"
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        status = "ACTIVE HIT" if body.active else ("INACTIVE" if body.active is False else "RECORDED")
+        value_str = f"{body.value} {body.units or ''}".strip() if body.value is not None else "—"
+        line = (
+            f"\n### Wetlab Result — {timestamp}\n"
+            f"- **Compound**: `{body.compound_id}`"
+            + (f" (`{body.smiles}`)" if body.smiles else "")
+            + f"\n- **Assay**: {body.assay_type}  |  **Result**: {value_str}  |  **Status**: {status}\n"
+            + (f"- **Notes**: {body.notes}\n" if body.notes else "")
+            + "\n---\n"
+        )
+        with open(findings_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as exc:
+        logger.warning("Failed to append wetlab result to FINDINGS.md: %s", exc)
+
+    return {
+        "status": "recorded",
+        "compound_id": body.compound_id,
+        "finding_index": len(memory.experimental_findings) - 1,
+        "message": (
+            f"Result recorded. Session now has {len(memory.experimental_findings)} "
+            "experimental finding(s). Re-run the pipeline to incorporate this data."
+        ),
+    }
 
 
 @router.post("/api/discovery/capability-gap")
@@ -2451,6 +3282,8 @@ class PluginInfo(BaseModel):
     name: str
     description: str
     loaded: bool
+    available: bool
+    unavailable_reason: Optional[str] = None
     type: str  # "deterministic" | "semantic"
     input_schema: dict
     output_schema: dict
@@ -2477,17 +3310,21 @@ async def get_plugins():
 
     pm = get_plugin_manager()
     discovery_llm = get_discovery_llm_service()
-    registered = pm.get_registered_names()
+    registered = pm.get_all_names()
 
     plugins_info = []
     for name in registered:
         plugin = pm.get_plugin(name)
         is_loaded = name in pm._loaded
+        unavailable_reason = pm.get_unavailable_reason(name)
+        available = plugin is not None
 
         plugins_info.append(PluginInfo(
             name=name,
-            description=plugin.description if plugin else "Unknown",
+            description=plugin.description if plugin else "Plugin failed to initialize",
             loaded=is_loaded,
+            available=available,
+            unavailable_reason=unavailable_reason,
             type="deterministic",  # All current plugins are deterministic
             input_schema=plugin.input_schema() if plugin else {},
             output_schema=plugin.output_schema() if plugin else {},

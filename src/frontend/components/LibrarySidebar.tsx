@@ -53,7 +53,25 @@ export default function LibrarySidebar({
   const prevProcessingRef = useRef(false);
 
   const sessions = useDiscoveryStore((s) => s.sessions);
-  const sessionList = useMemo(() => Object.values(sessions), [sessions]);
+  const upsertBackendSession = useDiscoveryStore((s) => s.upsertBackendSession);
+  // Only show sessions that belong to this project
+  const sessionList = useMemo(
+    () => Object.values(sessions).filter((s) => s.projectId === projectId),
+    [sessions, projectId]
+  );
+
+  // Sync persisted sessions from the backend on mount so sessions from previous
+  // runs appear even if localStorage was cleared or the store is stale.
+  useEffect(() => {
+    if (!projectId) return;
+    api.listDiscoverySessions(projectId).then((backendSessions) => {
+      backendSessions.forEach((s) => {
+        upsertBackendSession(s.session_id, s.session_name, s.created_at ?? new Date().toISOString(), projectId);
+      });
+    }).catch(() => {
+      // Backend not ready yet — sessions will appear once it connects
+    });
+  }, [projectId, upsertBackendSession]);
 
   const loadFiles = useCallback(
     async (silent = false) => {

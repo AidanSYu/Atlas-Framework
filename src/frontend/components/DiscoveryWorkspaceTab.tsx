@@ -2,13 +2,14 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { DiscoveryWorkbench } from './DiscoveryWorkbench';
-import ChatShell from '@/components/chat/ChatShell';
-import { ScriptApprovalModal } from './ScriptApprovalModal';
+import { useDiscoveryConversation } from '@/stores/discoveryConversationStore';
+import { DiscoveryChat } from './discovery/DiscoveryChat';
 import { PluginManager } from './PluginManager';
-import { MessageSquare, Download, FileText, Loader2, Play, X, Eye } from 'lucide-react';
-import { api, getApiBase } from '@/lib/api';
-import { streamSSE, type NormalizedEvent } from '@/lib/stream-adapter';
+import {
+  Database, FileText, Loader2, X, Eye, CheckCircle2, AlertTriangle,
+  Puzzle, ChevronDown, ChevronUp,
+} from 'lucide-react';
+import { api } from '@/lib/api';
 import { usePanelResize } from '@/hooks/usePanelResize';
 
 interface DiscoveryWorkspaceTabProps {
@@ -16,9 +17,6 @@ interface DiscoveryWorkspaceTabProps {
   projectId: string;
 }
 
-// ---------------------------------------------------------------------------
-// Drag-handle divider — shared between horizontal and vertical splits
-// ---------------------------------------------------------------------------
 function DragHandle({
   direction,
   onMouseDown,
@@ -41,7 +39,6 @@ function DragHandle({
         isDragging ? (isH ? 'bg-safety/30' : 'bg-safety/30') : 'bg-border/60',
       ].join(' ')}
     >
-      {/* Visual indicator bar */}
       <div
         className={[
           'rounded-full bg-border group-hover:bg-safety/60 transition-colors duration-100',
@@ -53,40 +50,25 @@ function DragHandle({
   );
 }
 
+type RightTab = 'results' | 'files' | 'plugins';
+
 export function DiscoveryWorkspaceTab({ sessionId, projectId }: DiscoveryWorkspaceTabProps) {
   const session = useDiscoveryStore((s) => s.sessions[sessionId]);
+  // Read candidates from the conversation store — populated when pipeline_complete fires
+  const storeCandidates = useDiscoveryConversation((s) => s.getOrCreate(sessionId).candidates);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rightTab, setRightTab] = useState<RightTab>('results');
+  const [sessionStage, setSessionStage] = useState('setup');
 
-  // ---------------------------------------------------------------------------
-  // Resizable panel sizes — persisted in localStorage
-  // ---------------------------------------------------------------------------
-  const { size: leftWidth, handleMouseDown: handleHDrag, isDragging: isHDragging } = usePanelResize({
-    initialSize: 380,
-    minSize: 240,
-    maxSize: 620,
+  const { size: rightWidth, handleMouseDown: handleHDrag, isDragging: isHDragging } = usePanelResize({
+    initialSize: 420,
+    minSize: 280,
+    maxSize: 700,
     direction: 'horizontal',
-    storageKey: 'discovery-left-panel-width',
+    storageKey: 'discovery-right-panel-width',
   });
-  const { size: pluginHeight, handleMouseDown: handleV1Drag, isDragging: isV1Dragging } = usePanelResize({
-    initialSize: 192, // h-48 = 12rem = 192px
-    minSize: 80,
-    maxSize: 400,
-    direction: 'vertical',
-    invert: true, // handle sits above this panel — drag down to shrink
-    storageKey: 'discovery-plugin-panel-height',
-  });
-  const { size: filesHeight, handleMouseDown: handleV2Drag, isDragging: isV2Dragging } = usePanelResize({
-    initialSize: 128, // h-32 = 8rem = 128px
-    minSize: 60,
-    maxSize: 300,
-    direction: 'vertical',
-    invert: true, // handle sits above this panel — drag down to shrink
-    storageKey: 'discovery-files-panel-height',
-  });
-  // ---------------------------------------------------------------------------
 
-  // File preview state
   const [previewFile, setPreviewFile] = useState<{
     filename: string;
     content: string;
@@ -101,56 +83,6 @@ export function DiscoveryWorkspaceTab({ sessionId, projectId }: DiscoveryWorkspa
     }
   }, [sessionId]);
 
-  // Phase 5: Executor state
-  const [executorRunning, setExecutorRunning] = useState(false);
-  const [pendingScript, setPendingScript] = useState<{
-    filename: string;
-    code: string;
-    description: string;
-    requiredPackages: string[];
-  } | null>(null);
-
-  // Fetch session files from backend on mount
-  useEffect(() => {
-    async function loadSessionFiles() {
-      try {
-        setIsLoading(true);
-        setError(null);
-        const files = await api.getSessionFiles(sessionId);
-
-        // Update the discoveryStore with fetched files (store paths, not just names)
-        useDiscoveryStore.setState((state) => {
-          if (state.sessions[sessionId]) {
-            return {
-              ...state,
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...state.sessions[sessionId],
-                  generatedFiles: files.map(f => f.path),
-                },
-              },
-            };
-          }
-          return state;
-        });
-      } catch (err) {
-        // Gracefully handle 404 (backend session row not created yet) — do not block UI.
-        // Any other error surfaces as a soft warning in the console only.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('404') && !msg.toLowerCase().includes('not found')) {
-          console.error('Failed to load session files:', err);
-        }
-        // Don't set error state — allow workspace to render with empty file list.
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    loadSessionFiles();
-  }, [sessionId]);
-
-  // Phase 5: Executor handlers (must come before handleCoordinatorComplete which depends on it)
   const refreshSessionFiles = useCallback(async () => {
     try {
       const files = await api.getSessionFiles(sessionId);
@@ -174,100 +106,55 @@ export function DiscoveryWorkspaceTab({ sessionId, projectId }: DiscoveryWorkspa
     }
   }, [sessionId]);
 
-  // All hooks must come before any early returns (Rules of Hooks)
-  const handleCoordinatorComplete = useCallback((goals: string[]) => {
-    useDiscoveryStore.setState((state) => {
-      const s = state.sessions[sessionId];
-      if (!s) return state;
-      return {
-        ...state,
-        sessions: {
-          ...state.sessions,
-          [sessionId]: { ...s, status: 'complete' as const },
-        },
-      };
-    });
-
-    // Refresh file list — coordinator writes SESSION_INIT.md and session_memory.json
-    refreshSessionFiles();
-  }, [sessionId, refreshSessionFiles]);
-
-  const handleStartExecutor = useCallback(async (bodyOverrides: Record<string, any> = {}) => {
-    setExecutorRunning(true);
-    const url = `${getApiBase()}/api/discovery/${sessionId}/executor/start`;
-
-    try {
-      await streamSSE(
-        url,
-        { auto_approve: false, ...bodyOverrides },
-        (event: NormalizedEvent) => {
-          switch (event.type) {
-            case 'executor_script_generated':
-              setPendingScript({
-                filename: event.filename,
-                code: event.code,
-                description: event.description,
-                requiredPackages: event.requiredPackages,
-              });
-              break;
-
-            case 'executor_artifact':
-              // Refresh file list when new artifact is generated
-              refreshSessionFiles();
-              break;
-
-            case 'executor_complete':
-              setExecutorRunning(false);
-              refreshSessionFiles();
-              break;
-
-            case 'error':
-              console.error('Executor error:', event.message);
-              setExecutorRunning(false);
-              break;
+  useEffect(() => {
+    async function loadSessionFiles() {
+      try {
+        setIsLoading(true);
+        setError(null);
+        const files = await api.getSessionFiles(sessionId);
+        useDiscoveryStore.setState((state) => {
+          if (state.sessions[sessionId]) {
+            return {
+              ...state,
+              sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                  ...state.sessions[sessionId],
+                  generatedFiles: files.map(f => f.path),
+                },
+              },
+            };
           }
-        },
-        { timeout: 600000 } // 10 minutes
-      );
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') {
-        console.error('Executor stream error:', err);
-        setExecutorRunning(false);
+          return state;
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('404') && !msg.toLowerCase().includes('not found')) {
+          console.error('Failed to load session files:', err);
+        }
+      } finally {
+        setIsLoading(false);
       }
     }
-  }, [sessionId, refreshSessionFiles]);
+    loadSessionFiles();
+  }, [sessionId]);
 
-  const handleApproveScript = useCallback(async () => {
-    setPendingScript(null);
-    handleStartExecutor({ decision: 'approve' });
-  }, [handleStartExecutor]);
+  const handleCandidatesUpdate = useCallback((_newCandidates: any[]) => {
+    // Candidates are stored in discoveryConversationStore; also refresh files
+    refreshSessionFiles();
+    // Auto-switch to results tab when candidates arrive
+    setRightTab('results');
+  }, [refreshSessionFiles]);
 
-  const handleRejectScript = useCallback(async () => {
-    setPendingScript(null);
-    setExecutorRunning(false);
-    handleStartExecutor({ decision: 'reject' });
-  }, [handleStartExecutor]);
-
-  const handleEditScript = useCallback(
-    async (editedCode: string) => {
-      setPendingScript(null);
-      handleStartExecutor({ decision: 'edit', edited_code: editedCode });
-    },
-    [handleStartExecutor]
-  );
-
-  // Poll for new files during execution
-  useEffect(() => {
-    if (!executorRunning) return;
-
-    const interval = setInterval(() => {
+  const handleStageChange = useCallback((stage: string) => {
+    setSessionStage(stage);
+    if (stage === 'ready') {
       refreshSessionFiles();
-    }, 2000); // Poll every 2 seconds
+    }
+  }, [refreshSessionFiles]);
 
-    return () => clearInterval(interval);
-  }, [executorRunning, refreshSessionFiles]);
-
-  // --- Early returns (after all hooks) ---
+  // Use candidates from conversation store (single source of truth)
+  const candidates = storeCandidates;
 
   if (!session) {
     return (
@@ -305,127 +192,170 @@ export function DiscoveryWorkspaceTab({ sessionId, projectId }: DiscoveryWorkspa
     );
   }
 
-  const activeEpoch = session.activeEpochId ? session.epochs.get(session.activeEpochId) : null;
+  const riskColor = (risk: string) => {
+    if (!risk || risk === 'N/A') return 'text-muted-foreground';
+    if (risk === 'LOW') return 'text-green-400';
+    if (risk === 'MEDIUM') return 'text-yellow-400';
+    return 'text-red-400';
+  };
 
   return (
     <div className="flex h-full w-full overflow-hidden">
-      {/* ========== LEFT: Coordinator Chat ========== */}
-      <div
-        className="flex shrink-0 flex-col border-r border-border bg-card overflow-hidden"
-        style={{ width: leftWidth }}
-      >
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/30 px-3">
-          <MessageSquare className="h-3.5 w-3.5 text-emerald-500" />
-          <span className="text-xs font-medium text-foreground/80">Coordinator</span>
-          <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-500">
-            Discovery Mode
-          </span>
-        </div>
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <ChatShell
-            lockedMode="coordinator"
-            coordinatorSessionId={sessionId}
-            projectId={projectId}
-            onCitationClick={(filename, page) => {
-              console.log('Citation clicked:', filename, page);
-            }}
-            onCoordinatorComplete={handleCoordinatorComplete}
-          />
-        </div>
-
-        {/* Phase 5: Start Execution Button */}
-        {session.status === 'complete' && !executorRunning && (
-          <div className="shrink-0 border-t border-border bg-card/50 p-3">
-            <button
-              onClick={handleStartExecutor}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-orange-500 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-orange-600"
-            >
-              <Play className="h-4 w-4" />
-              Start Execution Sandbox
-            </button>
-            <p className="mt-2 text-center text-[10px] text-muted-foreground">
-              Generate and execute Python scripts
-            </p>
-          </div>
-        )}
-
-        {executorRunning && (
-          <div className="shrink-0 border-t border-border bg-orange-500/10 p-3">
-            <div className="flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin text-orange-500" />
-              <span className="text-xs font-medium text-orange-500">Executor Running...</span>
-            </div>
-          </div>
-        )}
+      {/* ========== LEFT: Discovery Chat (primary) ========== */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <DiscoveryChat
+          sessionId={sessionId}
+          projectId={projectId}
+          onCandidatesUpdate={handleCandidatesUpdate}
+          onStageChange={handleStageChange}
+        />
       </div>
 
-      {/* ========== HORIZONTAL DRAG HANDLE ========== */}
+      {/* ========== DRAG HANDLE ========== */}
       <DragHandle direction="horizontal" onMouseDown={handleHDrag} isDragging={isHDragging} />
 
-      {/* ========== RIGHT: Tools + Plugins + Files ========== */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Top: DiscoveryWorkbench — takes remaining space */}
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <DiscoveryWorkbench
-            streamProgress={null}
-            isLoading={session.status === 'running'}
-            finalCandidates={activeEpoch?.candidates || []}
-          />
+      {/* ========== RIGHT: Context Panel ========== */}
+      <div
+        className="flex shrink-0 flex-col border-l border-border bg-card/50 overflow-hidden"
+        style={{ width: rightWidth }}
+      >
+        {/* Tab bar */}
+        <div className="flex h-10 shrink-0 border-b border-border bg-surface/30">
+          {([
+            { key: 'results' as RightTab, label: 'Results', icon: Database, count: candidates.length },
+            { key: 'files' as RightTab, label: 'Files', icon: FileText, count: session.generatedFiles.length },
+            { key: 'plugins' as RightTab, label: 'Plugins', icon: Puzzle },
+          ]).map(({ key, label, icon: Icon, count }) => (
+            <button
+              key={key}
+              onClick={() => setRightTab(key)}
+              className={[
+                'flex items-center gap-1.5 px-3 h-full text-[11px] font-medium transition-colors border-b-2',
+                rightTab === key
+                  ? 'border-emerald-500 text-foreground'
+                  : 'border-transparent text-muted-foreground hover:text-foreground',
+              ].join(' ')}
+            >
+              <Icon className="h-3 w-3" />
+              {label}
+              {count != null && count > 0 && (
+                <span className="text-[9px] bg-surface rounded-full px-1.5 py-0.5">{count}</span>
+              )}
+            </button>
+          ))}
         </div>
 
-        {/* ========== VERTICAL DRAG HANDLE 1 (workbench ↔ plugins) ========== */}
-        <DragHandle direction="vertical" onMouseDown={handleV1Drag} isDragging={isV1Dragging} />
+        {/* Tab content */}
+        <div className="flex-1 overflow-y-auto">
+          {/* Results tab */}
+          {rightTab === 'results' && (
+            <div className="h-full flex flex-col">
+              {candidates.length === 0 ? (
+                <div className="flex h-full items-center justify-center p-6 text-center">
+                  <div>
+                    <Database className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+                    <p className="text-xs text-muted-foreground">No candidates yet</p>
+                    <p className="text-[10px] text-muted-foreground/60 mt-1">Run the pipeline to populate results</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-[11px]">
+                    <thead>
+                      <tr className="bg-orange-500/5 border-b border-orange-500/10 text-orange-500/70 uppercase sticky top-0 z-10">
+                        <th className="px-2 py-2 font-medium">#</th>
+                        <th className="px-2 py-2 font-medium">SMILES</th>
+                        <th className="px-2 py-2 font-medium">MW</th>
+                        <th className="px-2 py-2 font-medium">LogP</th>
+                        <th className="px-2 py-2 font-medium">SA</th>
+                        <th className="px-2 py-2 font-medium">hERG</th>
+                        <th className="px-2 py-2 font-medium">Safety</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {candidates.map((c: any, i: number) => (
+                        <tr key={i} className="border-b border-orange-500/10 hover:bg-orange-500/5 transition-colors">
+                          <td className="px-2 py-1.5 text-muted-foreground">{i + 1}</td>
+                          <td className="px-2 py-1.5 font-mono text-foreground/90 truncate max-w-[120px]" title={c.smiles}>
+                            {c.compound_id || c.smiles?.slice(0, 20)}
+                          </td>
+                          <td className="px-2 py-1.5 text-muted-foreground whitespace-nowrap">
+                            {c.properties?.MolWt != null ? Number(c.properties.MolWt).toFixed(0) : '-'}
+                          </td>
+                          <td className="px-2 py-1.5 text-muted-foreground whitespace-nowrap">
+                            {c.properties?.LogP != null ? Number(c.properties.LogP).toFixed(1) : '-'}
+                          </td>
+                          <td className="px-2 py-1.5 text-muted-foreground whitespace-nowrap">
+                            {c.sa_score != null ? Number(c.sa_score).toFixed(1) : '-'}
+                          </td>
+                          <td className={`px-2 py-1.5 whitespace-nowrap font-medium ${riskColor(c.admet?.herg_risk)}`}>
+                            {c.admet?.herg_risk || '-'}
+                          </td>
+                          <td className="px-2 py-1.5 whitespace-nowrap">
+                            {c.toxicity ? (
+                              c.toxicity.clean ? (
+                                <span className="flex items-center gap-1 text-green-400 text-[10px]">
+                                  <CheckCircle2 className="h-3 w-3" /> Pass
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1 text-red-400 text-[10px]" title={`${c.toxicity.alert_count} alerts`}>
+                                  <AlertTriangle className="h-3 w-3" /> Fail
+                                </span>
+                              )
+                            ) : (
+                              <span className={`text-[10px] font-medium ${riskColor(c.admet?.overall)}`}>
+                                {c.admet?.overall || '-'}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
 
-        {/* Middle: Plugin Manager */}
-        <div className="shrink-0 overflow-y-auto" style={{ height: pluginHeight }}>
-          <PluginManager projectId={projectId} />
-        </div>
+          {/* Files tab */}
+          {rightTab === 'files' && (
+            <div className="p-2">
+              {session.generatedFiles.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic text-center py-6">
+                  No files generated yet. Complete setup to create session files.
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {session.generatedFiles.map((file, idx) => {
+                    const isViewable = /\.(md|json|txt|csv|py|log)$/i.test(file);
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => isViewable && handleViewFile(file)}
+                        className={[
+                          'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors group text-left',
+                          isViewable
+                            ? 'hover:bg-primary/10 cursor-pointer'
+                            : 'hover:bg-surface cursor-default',
+                        ].join(' ')}
+                      >
+                        <FileText className={`h-3 w-3 shrink-0 ${file.endsWith('.md') ? 'text-emerald-500' : 'text-muted-foreground'}`} />
+                        <span className="flex-1 truncate font-mono text-foreground/80">{file}</span>
+                        {isViewable && (
+                          <Eye className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
-        {/* ========== VERTICAL DRAG HANDLE 2 (plugins ↔ files) ========== */}
-        <DragHandle direction="vertical" onMouseDown={handleV2Drag} isDragging={isV2Dragging} />
-
-        {/* Bottom: Session Files */}
-        <div className="shrink-0 bg-card/50" style={{ height: filesHeight }}>
-          <div className="flex h-9 items-center gap-2 border-b border-border/50 bg-background/50 px-3">
-            <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Session Files
-            </span>
-            <span className="ml-auto text-[10px] text-muted-foreground">
-              {session.generatedFiles.length} files
-            </span>
-          </div>
-          <div className="overflow-y-auto p-2 h-[calc(100%-2.25rem)]">
-            {session.generatedFiles.length === 0 ? (
-              <p className="text-xs text-muted-foreground italic text-center py-4">
-                No files generated yet. The coordinator will create session files when initialization completes.
-              </p>
-            ) : (
-              <div className="space-y-1">
-                {session.generatedFiles.map((file, idx) => {
-                  const isViewable = /\.(md|json|txt|csv|py|log)$/i.test(file);
-                  return (
-                    <button
-                      key={idx}
-                      onClick={() => isViewable && handleViewFile(file)}
-                      className={[
-                        'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors group text-left',
-                        isViewable
-                          ? 'hover:bg-primary/10 cursor-pointer'
-                          : 'hover:bg-surface cursor-default',
-                      ].join(' ')}
-                    >
-                      <FileText className={`h-3 w-3 shrink-0 ${file.endsWith('.md') ? 'text-emerald-500' : 'text-muted-foreground'}`} />
-                      <span className="flex-1 truncate font-mono text-foreground/80">{file}</span>
-                      {isViewable && (
-                        <Eye className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          {/* Plugins tab */}
+          {rightTab === 'plugins' && (
+            <PluginManager projectId={projectId} />
+          )}
         </div>
       </div>
 
@@ -433,7 +363,6 @@ export function DiscoveryWorkspaceTab({ sessionId, projectId }: DiscoveryWorkspa
       {previewFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="relative mx-4 flex max-h-[80vh] w-full max-w-3xl flex-col rounded-xl border border-border bg-card shadow-2xl">
-            {/* Header */}
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
               <div className="flex items-center gap-2">
                 <FileText className={`h-4 w-4 ${previewFile.filename.endsWith('.md') ? 'text-emerald-500' : 'text-muted-foreground'}`} />
@@ -446,7 +375,6 @@ export function DiscoveryWorkspaceTab({ sessionId, projectId }: DiscoveryWorkspa
                 <X className="h-4 w-4" />
               </button>
             </div>
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-4">
               <pre className="whitespace-pre-wrap text-xs font-mono text-foreground/90 leading-relaxed">
                 {previewFile.content}
@@ -454,18 +382,6 @@ export function DiscoveryWorkspaceTab({ sessionId, projectId }: DiscoveryWorkspa
             </div>
           </div>
         </div>
-      )}
-
-      {/* Phase 5: Script Approval Modal */}
-      {pendingScript && (
-        <ScriptApprovalModal
-          script={pendingScript}
-          sessionId={sessionId}
-          onApprove={handleApproveScript}
-          onReject={handleRejectScript}
-          onEdit={handleEditScript}
-          onClose={() => setPendingScript(null)}
-        />
       )}
     </div>
   );

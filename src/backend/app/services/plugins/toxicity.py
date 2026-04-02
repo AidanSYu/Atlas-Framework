@@ -48,17 +48,32 @@ class ToxicityCheckerPlugin(BasePlugin):
         return compiled
 
     async def execute(self, model: Any, **kwargs) -> dict:
-        """Check a SMILES string for structural alerts and PAINS.
+        """Check one or many SMILES for structural alerts and PAINS.
 
         Args (in kwargs):
-            smiles: str -- SMILES representation of the molecule.
+            smiles_list: list[str] -- Batch mode (preferred in pipeline).
+            smiles: str            -- Single-molecule mode (legacy).
 
         Returns:
-            Dict with alert list, PAINS hits, and clean verdict.
+            Batch mode:  {"toxicity_results": [...], "summary": "..."}
+            Single mode: {"smiles": ..., "clean": ..., "alert_count": ..., ...}
         """
+        smiles_list = kwargs.get("smiles_list")
+        if smiles_list and isinstance(smiles_list, list):
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._check_batch, model, smiles_list)
         smiles = kwargs.get("smiles", "")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._check, model, smiles)
+
+    def _check_batch(self, compiled_patterns: dict, smiles_list: list) -> dict:
+        results = [self._check(compiled_patterns, smi) for smi in smiles_list if (smi or "").strip()]
+        clean_count = sum(1 for r in results if r.get("clean"))
+        flagged_count = len(results) - clean_count
+        return {
+            "toxicity_results": results,
+            "summary": f"Toxicity check: {clean_count} clean, {flagged_count} flagged.",
+        }
 
     def _check(self, compiled_patterns: dict, smiles: str) -> dict:
         from rdkit import Chem

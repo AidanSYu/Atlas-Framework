@@ -14,7 +14,7 @@ Uses MemorySaver checkpointing with thread_id = f"executor-{session_id}".
 Living .md Knowledge Substrate
 -------------------------------
 Session root (.md files the agents read and write):
-  SESSION_INIT.md    — written by coordinator after initialization
+  SESSION_CONTEXT.md — written by coordinator; perpetual living context file
   FINDINGS.md        — appended by executor after every successful run
   HYPOTHESES.md      — user or agent writes; guides iteration direction
   CONSTRAINTS.md     — user drops domain constraints here
@@ -23,6 +23,7 @@ Session root (.md files the agents read and write):
 Agents read ALL .md files at the start of each run so knowledge accumulates.
 """
 import asyncio
+import ast
 import logging
 import subprocess
 import sys
@@ -40,13 +41,22 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _is_path_relative_to(path: Path, base: Path) -> bool:
+    """Compat shim for Path.is_relative_to() (added in Python 3.9)."""
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
 # ============================================================
 # Living .md Knowledge Helpers
 # ============================================================
 
 # Priority order for .md files — most important context first
 _MD_PRIORITY = [
-    "SESSION_INIT.md",
+    "SESSION_CONTEXT.md",
     "FINDINGS.md",
     "HYPOTHESES.md",
     "CONSTRAINTS.md",
@@ -92,7 +102,9 @@ def _read_session_notes(session_id: str, max_chars: int = 3000) -> str:
                 logger.warning("Failed to read session note %s: %s", fpath, exc)
 
     combined = "\n\n".join(parts)
-    return combined[:max_chars]
+    if len(combined) > max_chars:
+        combined = combined[:max_chars].rsplit("\n", 1)[0]
+    return combined
 
 
 def _read_key_artifacts(session_id: str, max_chars: int = 1500) -> str:
@@ -128,7 +140,146 @@ def _read_key_artifacts(session_id: str, max_chars: int = 1500) -> str:
             pass
 
     combined = "\n\n".join(parts)
-    return combined[:max_chars]
+    if len(combined) > max_chars:
+        combined = combined[:max_chars].rsplit("\n", 1)[0]
+    return combined
+
+
+# ============================================================
+# CSV → Candidates Parser
+# ============================================================
+
+_SMILES_ALIASES: set[str] = {"SMILES", "smiles", "Smiles", "canonical_smiles", "mol_smiles"}
+_NAME_ALIASES: set[str] = {"Name", "name", "compound_name", "CompoundName", "id", "ID", "molecule_name"}
+_MW_ALIASES: set[str] = {"MW", "mw", "MolWt", "mol_weight", "molecular_weight", "MolecularWeight", "ExactMolWt"}
+_LOGP_ALIASES: set[str] = {"LogP", "logp", "MolLogP", "log_p", "XLogP"}
+_TPSA_ALIASES: set[str] = {"TPSA", "tpsa", "TopoPSA"}
+_HBD_ALIASES: set[str] = {"HBD", "hbd", "NumHDonors", "HBDonors", "H_donors"}
+_HBA_ALIASES: set[str] = {"HBA", "hba", "NumHAcceptors", "HBAcceptors", "H_acceptors"}
+_QED_ALIASES: set[str] = {"QED", "qed", "drug_likeness"}
+_LIPINSKI_ALIASES: set[str] = {"Lipinski_Pass", "lipinski_pass", "LipinskiPass", "passes_lipinski", "Ro5"}
+
+
+def _resolve_col(headers: list[str], aliases: set[str]) -> Optional[str]:
+    """Return first column header matching any alias, else None."""
+    for col in headers:
+        if col.strip() in aliases:
+            return col.strip()
+    return None
+
+
+def _parse_csv_candidates(session_id: str) -> list[dict]:
+    """Parse the most recently modified CSV in generated/ into candidate dicts.
+
+    Returns candidates in the format expected by the UCSO table:
+        [{"smiles": str, "name": str, "properties": {...}, "toxicity": {...}}]
+
+    Handles all common column name variants from LLM-generated scripts.
+    Uses the stdlib csv module — no pandas dependency.
+    Never raises: all errors are logged and an empty list is returned.
+    """
+    import csv as csv_module
+
+    generated = Path(settings.DATA_DIR) / "discovery" / session_id / "generated"
+    if not generated.exists():
+        return []
+
+    csv_files = sorted(generated.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not csv_files:
+        return []
+
+    csv_path = csv_files[0]
+    candidates: list[dict] = []
+
+    try:
+        with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
+            reader = csv_module.DictReader(f)
+            headers: list[str] = list(reader.fieldnames or [])
+
+            smiles_col = _resolve_col(headers, _SMILES_ALIASES)
+            if not smiles_col:
+                logger.warning("CSV %s has no SMILES column (headers: %s)", csv_path.name, headers)
+                return []
+
+            name_col = _resolve_col(headers, _NAME_ALIASES)
+            mw_col = _resolve_col(headers, _MW_ALIASES)
+            logp_col = _resolve_col(headers, _LOGP_ALIASES)
+            tpsa_col = _resolve_col(headers, _TPSA_ALIASES)
+            hbd_col = _resolve_col(headers, _HBD_ALIASES)
+            hba_col = _resolve_col(headers, _HBA_ALIASES)
+            qed_col = _resolve_col(headers, _QED_ALIASES)
+            lipinski_col = _resolve_col(headers, _LIPINSKI_ALIASES)
+            # Find any alert/PAINS/toxicity column by substring
+            alert_col = next(
+                (h for h in headers if any(kw in h.lower() for kw in ["alert", "pains", "tox", "flag"])),
+                None,
+            )
+
+            def _float_val(col: Optional[str], row: dict) -> Optional[float]:
+                if col is None:
+                    return None
+                raw = row.get(col, "").strip()
+                try:
+                    return float(raw) if raw else None
+                except ValueError:
+                    return None
+
+            def _bool_val(col: Optional[str], row: dict) -> Optional[bool]:
+                if col is None:
+                    return None
+                raw = row.get(col, "").strip().lower()
+                return raw in {"true", "1", "yes", "pass", "passed"}
+
+            for row in reader:
+                smiles = row.get(smiles_col, "").strip()
+                if not smiles:
+                    continue
+
+                properties: dict = {}
+                for alias_key, col, precision in [
+                    ("MolWt", mw_col, 2),
+                    ("LogP", logp_col, 3),
+                    ("TPSA", tpsa_col, 1),
+                    ("HBD", hbd_col, None),
+                    ("HBA", hba_col, None),
+                    ("QED", qed_col, 3),
+                ]:
+                    v = _float_val(col, row)
+                    if v is not None:
+                        properties[alias_key] = round(v, precision) if precision else int(v)
+
+                toxicity: Optional[dict] = None
+                if alert_col is not None:
+                    alert_raw = row.get(alert_col, "").strip()
+                    try:
+                        alert_count = int(float(alert_raw)) if alert_raw else 0
+                    except ValueError:
+                        alert_count = 0 if alert_raw.lower() in {"false", "0", "no", "clean"} else 1
+                    toxicity = {"clean": alert_count == 0, "alert_count": alert_count}
+                elif lipinski_col is not None:
+                    lp = _bool_val(lipinski_col, row)
+                    if lp is not None:
+                        toxicity = {"clean": lp, "alert_count": 0 if lp else 1}
+
+                idx = len(candidates) + 1
+                name = row.get(name_col, f"Compound_{idx}").strip() if name_col else f"Compound_{idx}"
+
+                candidates.append({
+                    "smiles": smiles,
+                    "name": name,
+                    "properties": properties,
+                    "toxicity": toxicity,
+                })
+
+                if len(candidates) >= 200:
+                    break
+
+    except Exception as exc:
+        logger.warning("CSV candidate parsing failed for %s: %s", csv_path.name, exc)
+        return []
+
+    logger.info("Parsed %d candidates from %s", len(candidates), csv_path.name)
+    return candidates
 
 
 def _append_findings(
@@ -191,6 +342,9 @@ class ExecutorState(TypedDict, total=False):
     execution_output: str
     execution_error: Optional[str]
     artifacts_generated: List[str]
+
+    # Parsed molecule candidates from the most recent CSV artifact
+    parsed_candidates: List[dict]
 
     # Loop control
     iteration: int
@@ -340,7 +494,7 @@ Respond with the required JSON schema."""
         session_notes = _read_session_notes(session_id)
         notes_section = f"\n=== SESSION KNOWLEDGE (constraints, findings, notes) ===\n{session_notes}" if session_notes else ""
 
-        prompt = f"""You are a scientific computing agent generating Python scripts for chemistry research.
+        prompt = f"""You are a scientific computing agent generating complete, runnable Python scripts for computational chemistry research.
 
 === RESEARCH GOALS ===
 {chr(10).join(f"- {g}" for g in goals) if goals else "None specified"}
@@ -352,36 +506,75 @@ Respond with the required JSON schema."""
 === CURRENT TASK ===
 {task}
 
-Generate a complete, executable Python script that:
-1. Uses deterministic tools (RDKit, NumPy, Pandas — NO LLM calls, NO external APIs that require auth)
-2. Saves all outputs to the current directory (logs.txt, results.csv, plots.png)
-3. Includes error handling and progress logging to stdout
-4. Is fully self-contained (no external file dependencies except RDKit data)
-5. Writes structured output (CSV or JSON) for machine readability
+MANDATORY RULES — violating any rule causes failure:
+1. Use ONLY: rdkit, pandas, numpy, matplotlib, scipy, pathlib, csv, json, sys, os, re, itertools
+2. NO external API calls, NO authentication, NO network requests
+3. Save all outputs to the CURRENT directory (relative paths only — the script runs in its own folder)
+4. Print progress to stdout every 10 molecules processed
+5. Validate every SMILES with Chem.MolFromSmiles() — skip None molecules silently
+6. Generate at least 20 valid compounds
 
-Available packages: rdkit, pandas, numpy, matplotlib, pathlib, csv, json
+MANDATORY CSV SCHEMA — when generating a molecule library, save as results.csv with EXACTLY these column headers:
+  SMILES,Name,MW,LogP,TPSA,HBD,HBA,QED,NumRotBonds,Lipinski_Pass,PAINS_Alerts
 
-IMPORTANT: The script will execute in the directory where it's saved.
-Use relative paths only. Print progress messages.
+Use the rdkit.Chem.FilterCatalog PAINS filter to compute PAINS_Alerts as an integer count.
 
-Example template:
+REFERENCE TEMPLATE (adapt to your specific task — write real chemistry, not placeholder comments):
 ```python
 import sys
-from pathlib import Path
 import pandas as pd
 from rdkit import Chem
-from rdkit.Chem import Descriptors
+from rdkit.Chem import Descriptors, QED, AllChem
+from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
+
+def build_pains_catalog():
+    params = FilterCatalogParams()
+    params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
+    return FilterCatalog(params)
+
+def compute_row(smiles, name, pains_catalog):
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    mw = Descriptors.ExactMolWt(mol)
+    logp = Descriptors.MolLogP(mol)
+    tpsa = Descriptors.TPSA(mol)
+    hbd = Descriptors.NumHDonors(mol)
+    hba = Descriptors.NumHAcceptors(mol)
+    qed_val = QED.qed(mol)
+    rot = Descriptors.NumRotatableBonds(mol)
+    lipinski = mw <= 500 and logp <= 5 and hbd <= 5 and hba <= 10
+    pains = len(pains_catalog.GetMatches(mol))
+    return dict(SMILES=smiles, Name=name, MW=round(mw, 2), LogP=round(logp, 3),
+                TPSA=round(tpsa, 1), HBD=hbd, HBA=hba, QED=round(qed_val, 3),
+                NumRotBonds=rot, Lipinski_Pass=lipinski, PAINS_Alerts=pains)
 
 def main():
-    print("Starting task: {task}")
+    print("Task: {task}")
+    pains_catalog = build_pains_catalog()
 
-    # Your logic here
-    results = []
+    # BUILD YOUR COMPOUND LIST HERE based on the research goals above.
+    # Each entry is (SMILES_string, compound_name).
+    # For drug discovery: enumerate R-groups on a core scaffold.
+    # Write real SMILES based on the target and goals — do not use placeholder names.
+    compounds = [
+        # ("smiles_here", "Name_here"),
+    ]
 
-    # Save results
-    df = pd.DataFrame(results)
+    rows = []
+    for i, (smi, name) in enumerate(compounds):
+        row = compute_row(smi, name, pains_catalog)
+        if row:
+            rows.append(row)
+        if (i + 1) % 10 == 0:
+            print(f"  Processed {{i+1}}/{{len(compounds)}} molecules, {{len(rows)}} valid")
+
+    df = pd.DataFrame(rows)
     df.to_csv("results.csv", index=False)
-    print(f"Saved {{len(results)}} results to results.csv")
+    print(f"Saved {{len(df)}} candidates to results.csv")
+    if not df.empty:
+        print("\\nTop candidates by QED:")
+        print(df.nlargest(5, "QED")[["Name", "MW", "LogP", "QED", "PAINS_Alerts"]].to_string(index=False))
 
 if __name__ == "__main__":
     try:
@@ -391,14 +584,18 @@ if __name__ == "__main__":
         sys.exit(1)
 ```
 
+IMPORTANT: The script must contain REAL chemistry content tailored to the research goals above.
+Do NOT include placeholder comments like "# Add SMILES here". Write actual SMILES strings.
+The script will run immediately after approval. If it has placeholders it will produce no results.
+
 Respond with the required JSON schema."""
 
         try:
             result = await llm_service.generate_constrained(
                 prompt=prompt,
                 schema=SCRIPT_GENERATION_SCHEMA,
-                temperature=0.4,
-                max_tokens=2048,
+                temperature=0.3,
+                max_tokens=4096,
             )
         except Exception as exc:
             logger.error("Script generation failed: %s", exc)
@@ -418,7 +615,7 @@ Respond with the required JSON schema."""
         # Save script to generated/ folder
         generated_folder = Path(settings.DATA_DIR) / "discovery" / session_id / "generated"
         script_path = (generated_folder / filename).resolve()
-        if not script_path.is_relative_to(generated_folder.resolve()):
+        if not _is_path_relative_to(script_path, generated_folder.resolve()):
             logger.error("Rejected script filename with path traversal: %s", raw_filename)
             return {"status": "complete", "execution_error": "Invalid script filename rejected."}
 
@@ -503,7 +700,7 @@ Respond with the required JSON schema."""
         filename = os.path.basename(raw_filename) or ""
         generated_folder = Path(settings.DATA_DIR) / "discovery" / session_id / "generated"
         script_path = (generated_folder / filename).resolve()
-        if not script_path.is_relative_to(generated_folder.resolve()):
+        if not _is_path_relative_to(script_path, generated_folder.resolve()):
             logger.error("Rejected script_filename with path traversal: %s", raw_filename)
             return {"status": "complete", "execution_error": "Invalid script filename rejected."}
 
@@ -513,6 +710,15 @@ Respond with the required JSON schema."""
                 "status": "complete"
             }
 
+        # Validate syntax before launching subprocess
+        try:
+            ast.parse(script_path.read_text(encoding="utf-8"))
+        except SyntaxError as exc:
+            return {
+                "execution_error": f"Script has a syntax error: {exc}",
+                "status": "complete",
+            }
+
         try:
             # Execute with timeout
             result = subprocess.run(
@@ -520,7 +726,7 @@ Respond with the required JSON schema."""
                 cwd=str(generated_folder),
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5 minutes
+                timeout=settings.DISCOVERY_SCRIPT_TIMEOUT,
                 env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent.parent)},
             )
 
@@ -557,10 +763,14 @@ Respond with the required JSON schema."""
                 artifacts=artifacts,
             )
 
+            # Parse any generated CSV into candidate molecules for the UI
+            parsed_candidates = _parse_csv_candidates(session_id)
+
             return {
                 "execution_output": result.stdout,
                 "execution_error": None,
                 "artifacts_generated": artifacts,
+                "parsed_candidates": parsed_candidates,
                 "script_status": "executed",
                 "iteration": iteration + 1,
                 "status": "planning",  # Loop back to plan next task
@@ -568,7 +778,7 @@ Respond with the required JSON schema."""
 
         except subprocess.TimeoutExpired:
             return {
-                "execution_error": "Script execution timeout (5 minutes)",
+                "execution_error": f"Script execution timeout ({settings.DISCOVERY_SCRIPT_TIMEOUT}s)",
                 "status": "complete"
             }
         except Exception as exc:
@@ -655,8 +865,13 @@ async def run_executor_streaming(
     from app.core.memory import get_memory_saver
     from app.services.discovery_session import SessionMemoryService
 
-    # Load session memory for multi-agent coordination
-    session_memory = SessionMemoryService.load_session_memory(session_id)
+    # Load session memory with retry (coordinator may still be flushing to disk)
+    session_memory = None
+    for _attempt in range(3):
+        session_memory = SessionMemoryService.load_session_memory(session_id)
+        if session_memory is not None:
+            break
+        await asyncio.sleep(0.5)
 
     if extracted_goals is None:
         # Bootstrap from session memory (coordinator already ran)
@@ -761,6 +976,15 @@ async def run_executor_streaming(
                             yield ("executor_artifact", {
                                 "filename": artifact,
                                 "type": ext or "txt",
+                            })
+
+                        # Yield parsed candidates if any CSV was produced
+                        parsed_candidates = update.get("parsed_candidates", [])
+                        if parsed_candidates:
+                            yield ("executor_candidates", {"candidates": parsed_candidates})
+                        elif any(a.endswith(".csv") for a in artifacts):
+                            yield ("executor_thinking", {
+                                "content": "CSV generated but no candidates parsed — column headers may not match expected schema."
                             })
 
     except Exception as exc:

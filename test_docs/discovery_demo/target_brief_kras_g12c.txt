@@ -1,0 +1,29 @@
+Project: KRAS G12C Covalent Inhibitor Sprint
+Owner: Discovery Demo Team
+Date: 2026-03-10
+
+Primary objective:
+- Identify small molecules that bind KRAS G12C at the switch-II pocket.
+- Prioritize reversible or targeted covalent chemotypes with oral exposure potential.
+
+Target profile:
+- Target: KRAS G12C GDP-preferred state
+- Mechanistic intent: suppress MAPK pathway signaling in KRAS G12C cell models
+
+Initial property constraints:
+- Molecular weight <= 500
+- LogP between 1.5 and 4.5
+- TPSA <= 120
+- Hydrogen bond donors <= 3
+- Rotatable bonds <= 9
+
+Safety constraints:
+- Avoid high hERG risk predictions
+- Prefer low DILI risk
+- Penalize strong CYP3A4 inhibition alerts
+
+Success criteria (screening phase):
+- Biochemical IC50 < 1000 nM
+- Cellular EC50 < 3000 nM
+- No high-risk structural alerts (Brenk/toxicophore)
+

@@ -1,0 +1,23 @@
+Assay metadata reference (mock)
+
+Assay A: biochemical_IC50
+- Target: KRAS G12C GDP state
+- Detection: fluorescence polarization
+- Concentration unit: nM
+- Lower LOD: 0.5
+- Upper LOD: 10000
+- Positive control: Sotorasib-like reference analog
+- Acceptance: positive control within 3-fold expected value
+
+Assay B: cellular_EC50
+- Cell line: KRAS G12C mutant lung adenocarcinoma model
+- Readout: pERK suppression
+- Concentration unit: nM
+- Lower LOD: 1
+- Upper LOD: 30000
+
+Decision thresholds for this campaign:
+- Biochemical IC50 pass threshold: < 1000 nM
+- Cellular EC50 pass threshold: < 3000 nM
+- Reject if repeated cytotoxicity confounds observed at low micromolar concentrations
+

@@ -1,0 +1,23 @@
+ADMET Triage Guide for Demo Runs
+
+Hard exclusions:
+- Predicted hERG high risk
+- Flagged reactive nitroso motifs
+- Strong mutagenicity alert in aromatic nitro clusters
+
+Soft penalties:
+- CYP3A4 inhibition: medium or high
+- Caco2 permeability: low
+- Predicted aqueous solubility < 0.05 mg/mL
+
+Known poor motifs:
+- Naphthalene-heavy cores (high hERG signal frequency)
+- Unsubstituted aniline nitro motifs
+- Highly basic dialkyl amines with cationic persistence
+
+Preferred ADMET window:
+- hERG risk: low
+- DILI risk: low or medium
+- Caco2 permeability: medium or high
+- Half-life target: 2-8 hours (avoid very long accumulation)
+

@@ -1,0 +1,16 @@
+Example prompt 1:
+Find KRAS G12C inhibitor candidates with biochemical IC50 under 1 uM, cellular EC50 under 3 uM, low hERG risk, and practical synthesis routes.
+
+Example prompt 2:
+Propose an oral-focused KRAS G12C campaign: prioritize balanced potency and ADMET over raw docking score, exclude naphthalene-like scaffolds, and keep MW below 500.
+
+Example prompt 3:
+Use prior campaign failures to guide exclusions, then design a shortlist with route feasibility and lead time constraints for immediate procurement.
+
+Expected coordinator extraction cues:
+- Domain: organic chemistry / small molecule
+- Target: KRAS G12C
+- Constraints: MW, LogP, TPSA, hERG, EC50/IC50 thresholds
+- Exclusions: naphthalene-rich and nitro-aniline motifs
+- Success metrics: potency + safety + synthesizability
+

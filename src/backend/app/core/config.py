@@ -10,7 +10,7 @@ def _get_backend_dir() -> Path:
 
 def get_env_path() -> Path:
     """Path to .env file (same file used for loading and saving API keys)."""
-    return _get_backend_dir() / ".env"
+    return _get_backend_dir().parent.parent / "config" / ".env"
 
 
 def _get_models_dir() -> str:
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     model_config = SettingsConfigDict(
-        env_file=str(_get_backend_dir() / ".env"),
+        env_file=str(_get_backend_dir().parent.parent / "config" / ".env"),
         case_sensitive=True,
         extra="ignore"
     )
@@ -139,9 +139,10 @@ class Settings(BaseSettings):
     # These settings are ONLY used by Discovery OS agents (Coordinator, Executor)
     # and do NOT affect chat/retrieval/global model selection
     DISCOVERY_ORCHESTRATION_PROVIDER: str = "deepseek"  # Provider for planning/reasoning
-    DISCOVERY_ORCHESTRATION_MODEL: str = "deepseek-reasoner"  # Model for high-level orchestration
+    DISCOVERY_ORCHESTRATION_MODEL: str = "deepseek-chat"  # DeepSeek V3 — supports JSON output, system prompts, temperature
     DISCOVERY_TOOL_PROVIDER: str = "minimax"  # Provider for tool calling/constrained generation
     DISCOVERY_TOOL_MODEL: str = "MiniMax-M2.5"  # Model for structured outputs and tool calls
+    DISCOVERY_SCRIPT_TIMEOUT: int = 300  # Seconds before executor script subprocess is killed
 
 
 settings = Settings()

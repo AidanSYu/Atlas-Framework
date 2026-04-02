@@ -6,11 +6,11 @@ used for chat/retrieval, ensuring that global model changes do not affect
 active discovery sessions.
 
 Architecture:
-- DeepSeek: High-level orchestration and planning (deepseek-reasoner recommended)
-- MiniMax: Fast tool calling and constrained generation (MiniMax-M2.5)
-- LiteLLM: Unified API gateway for provider abstraction
-
-Future: Can be extended to support local models once hardware permits.
+- DeepSeek V3 (deepseek-chat): Orchestration, planning, structured JSON output.
+  NOTE: deepseek-reasoner (R1) does NOT reliably return content — it puts
+  output in reasoning_content and leaves content empty. Use deepseek-chat.
+- MiniMax (MiniMax-M2.5): Fast tool calling and constrained generation.
+- LiteLLM: Unified API gateway for provider abstraction.
 """
 import asyncio
 import json
@@ -130,6 +130,9 @@ class DiscoveryLLMService:
         else:
             raise ValueError(f"Unsupported orchestration provider: {self._orchestration_provider}")
 
+    def _is_reasoner_model(self) -> bool:
+        return "reasoner" in self._orchestration_model.lower() or "r1" in self._orchestration_model.lower()
+
     async def _orchestrate_deepseek(
         self,
         prompt: str,
@@ -138,29 +141,209 @@ class DiscoveryLLMService:
         max_tokens: int,
         **kwargs,
     ) -> str:
-        """Generate text using DeepSeek API."""
+        """Generate text using DeepSeek API.
+
+        Handles both deepseek-chat (V3) and deepseek-reasoner (R1):
+        - V3: supports system role, temperature, and returns content normally.
+        - R1: does NOT support temperature, may return empty content (output
+          is in reasoning_content). We fall back to reasoning_content when
+          content is empty.
+        """
         client = self._get_deepseek_client()
+        is_reasoner = self._is_reasoner_model()
 
         messages = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+            if is_reasoner:
+                # R1 doesn't support system role — prepend to user message
+                prompt = f"{system_prompt}\n\n---\n\n{prompt}"
+            else:
+                messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        call_kwargs: Dict[str, Any] = {
+            "model": self._orchestration_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+        if not is_reasoner:
+            call_kwargs["temperature"] = temperature
+        call_kwargs.update(kwargs)
+
         try:
-            response = await client.chat.completions.create(
-                model=self._orchestration_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                **kwargs,
-            )
-            return response.choices[0].message.content or ""
+            response = await client.chat.completions.create(**call_kwargs)
+            msg = response.choices[0].message
+            content = msg.content or ""
+
+            # R1 puts output in reasoning_content when content is empty
+            if not content.strip() and hasattr(msg, "reasoning_content"):
+                reasoning = getattr(msg, "reasoning_content", None) or ""
+                if reasoning.strip():
+                    logger.info(
+                        "DeepSeek reasoner returned empty content; "
+                        "extracting from reasoning_content (%d chars)",
+                        len(reasoning),
+                    )
+                    content = reasoning
+
+            if not content.strip():
+                logger.warning(
+                    "DeepSeek %s returned empty content AND empty reasoning_content",
+                    self._orchestration_model,
+                )
+
+            return content
         except Exception as e:
-            logger.error(f"DeepSeek orchestration failed: {e}")
-            raise RuntimeError(f"DeepSeek API error: {e}") from e
+            logger.error("DeepSeek orchestration failed (%s): %s", self._orchestration_model, e)
+            raise RuntimeError(f"DeepSeek API error ({self._orchestration_model}): {e}") from e
 
     # ========================================================================
-    # Tool Calling API (Constrained generation for structured outputs)
+    # Orchestration-level constrained generation (DeepSeek — for coordinator)
+    # ========================================================================
+
+    async def orchestrate_constrained(
+        self,
+        prompt: str,
+        schema: Dict[str, Any],
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 2048,
+    ) -> Dict[str, Any]:
+        """Generate structured JSON using the orchestration model (DeepSeek).
+
+        Use this for coordinator-level reasoning that must produce structured output.
+        DeepSeek is far more reliable at complex JSON than MiniMax because it is a
+        reasoning model — MiniMax is optimised for fast tool calling, not analysis.
+
+        Args:
+            prompt: The user prompt
+            schema: JSON Schema for output validation (used to build enforcement + defaults)
+            system_prompt: Optional system instructions (JSON enforcement is prepended)
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            Parsed JSON object with all required schema fields populated.
+        """
+        required_fields = schema.get("required", [])
+        properties = schema.get("properties", {})
+
+        # Build a readable schema description to embed in the system prompt
+        field_lines = []
+        for k in required_fields:
+            prop = properties.get(k, {})
+            desc = prop.get("description", "required")
+            field_lines.append(f'  "{k}": {desc}')
+        schema_desc = "\n".join(field_lines)
+
+        json_enforcement = (
+            "RESPONSE FORMAT: Respond with ONLY a single valid JSON object. "
+            "No markdown fences, no prose, no explanation outside the JSON. "
+            "Your response must start with { and end with }.\n"
+            f"Required fields:\n{schema_desc}"
+        )
+        effective_system = (
+            f"{json_enforcement}\n\n{system_prompt}" if system_prompt else json_enforcement
+        )
+        parsed: Optional[Dict[str, Any]] = None
+        last_error: Optional[Exception] = None
+        last_raw = ""
+        retries = 3
+
+        for attempt in range(1, retries + 1):
+            raw = await self.orchestrate(
+                prompt=prompt,
+                system_prompt=effective_system,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            last_raw = raw or ""
+            if not last_raw.strip():
+                last_error = RuntimeError("DeepSeek returned an empty response body")
+                logger.warning(
+                    "DeepSeek returned empty response on attempt %d/%d",
+                    attempt,
+                    retries,
+                )
+                if attempt < retries:
+                    await asyncio.sleep(0.4 * attempt)
+                    continue
+                break
+
+            json_str = self._extract_json_from_content(last_raw)
+            try:
+                loaded = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.warning(
+                    "DeepSeek JSON decode failed on attempt %d/%d: %s | raw: %s",
+                    attempt,
+                    retries,
+                    e,
+                    last_raw[:220],
+                )
+                if attempt < retries:
+                    await asyncio.sleep(0.4 * attempt)
+                    continue
+                break
+
+            if isinstance(loaded, list):
+                if loaded and isinstance(loaded[0], dict):
+                    logger.warning("DeepSeek returned a JSON array; unwrapping first element")
+                    loaded = loaded[0]
+                else:
+                    last_error = RuntimeError(
+                        f"DeepSeek returned a JSON array with no dict element: {json_str[:200]}"
+                    )
+                    if attempt < retries:
+                        await asyncio.sleep(0.4 * attempt)
+                        continue
+                    break
+
+            if not isinstance(loaded, dict):
+                last_error = RuntimeError("DeepSeek response parsed to a non-object JSON type")
+                if attempt < retries:
+                    await asyncio.sleep(0.4 * attempt)
+                    continue
+                break
+
+            parsed = loaded
+            break
+
+        if parsed is None:
+            raw_preview = (last_raw or "").strip()[:260]
+            raise RuntimeError(
+                "DeepSeek JSON decode error after retries. "
+                f"Last error: {last_error}. Raw preview: {raw_preview or '<empty>'}"
+            ) from last_error
+
+        if isinstance(parsed, list):
+            if parsed and isinstance(parsed[0], dict):
+                logger.warning("DeepSeek returned a JSON array; unwrapping first element")
+                parsed = parsed[0]
+            else:
+                raise RuntimeError(
+                    f"DeepSeek returned a JSON array with no dict element: {json_str[:200]}"
+                )
+
+        # Fill missing required keys with safe type-appropriate defaults
+        for key in required_fields:
+            if key not in parsed or parsed[key] is None:
+                prop = properties.get(key, {})
+                t = prop.get("type", "string")
+                if t == "array":
+                    parsed[key] = []
+                elif t == "boolean":
+                    parsed[key] = False
+                elif t == "object":
+                    parsed[key] = {}
+                else:
+                    parsed[key] = ""
+
+        return parsed
+
+    # ========================================================================
+    # Tool Calling API (Constrained generation for structured outputs — MiniMax)
     # ========================================================================
 
     async def generate_constrained(
@@ -263,6 +446,23 @@ class DiscoveryLLMService:
         # Fallback: return stripped content and hope for the best
         return content.strip()
 
+    def _build_schema_fallback(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Build a safe empty dict that satisfies the schema's required fields."""
+        fallback: Dict[str, Any] = {}
+        properties = schema.get("properties", {})
+        for key in schema.get("required", []):
+            prop = properties.get(key, {})
+            t = prop.get("type", "string")
+            if t == "array":
+                fallback[key] = []
+            elif t == "boolean":
+                fallback[key] = False
+            elif t == "object":
+                fallback[key] = {}
+            else:
+                fallback[key] = ""
+        return fallback
+
     async def _generate_minimax(
         self,
         prompt: str,
@@ -275,14 +475,25 @@ class DiscoveryLLMService:
         """Generate constrained output using MiniMax via LiteLLM."""
         self._ensure_minimax_ready()
 
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        # Prepend a hard JSON-object enforcement line to every system message.
+        # MiniMax occasionally returns a JSON array when not explicitly told otherwise.
+        json_enforcement = (
+            "CRITICAL FORMAT RULE: Your ENTIRE response must be a single JSON object "
+            "that starts with { and ends with }. Never return a JSON array []. "
+            "Never add text outside the JSON object."
+        )
+        effective_system = (
+            f"{json_enforcement}\n\n{system_prompt}" if system_prompt else json_enforcement
+        )
+
+        messages = [
+            {"role": "system", "content": effective_system},
+            {"role": "user", "content": prompt},
+        ]
 
         try:
             import litellm  # noqa: PLC0415 — lazy import (optional dependency)
-            # LiteLLM supports response_format for JSON mode
+
             response = await asyncio.to_thread(
                 litellm.completion,
                 model=f"minimax/{self._tool_model}",
@@ -302,15 +513,15 @@ class DiscoveryLLMService:
             # Parse JSON
             parsed = json.loads(json_str)
 
-            # MiniMax sometimes wraps the result in an array — unwrap it
+            # MiniMax sometimes returns an array despite json_object mode.
             if isinstance(parsed, list):
                 if parsed and isinstance(parsed[0], dict):
                     logger.warning("MiniMax returned a JSON array; unwrapping first element")
                     parsed = parsed[0]
                 else:
-                    # List of strings — retry with a stronger instruction
+                    # List of scalars — one retry with an explicit correction message.
                     logger.warning(
-                        "MiniMax returned a JSON array of non-dicts (%s); retrying with explicit dict instruction",
+                        "MiniMax returned a JSON array of scalars (%s); retrying",
                         json_str[:100],
                     )
                     retry_messages = list(messages) + [
@@ -318,8 +529,8 @@ class DiscoveryLLMService:
                         {
                             "role": "user",
                             "content": (
-                                "Your previous response was a JSON array, but I need a single JSON object (dict). "
-                                "Please respond again with ONLY a JSON object enclosed in curly braces {}."
+                                "That response was a JSON array. I need a JSON object (curly braces {}). "
+                                "Please respond with ONLY a valid JSON object."
                             ),
                         },
                     ]
@@ -337,25 +548,45 @@ class DiscoveryLLMService:
                     retry_json_str = self._extract_json_from_content(retry_content)
                     parsed = json.loads(retry_json_str)
                     if isinstance(parsed, list):
-                        raise RuntimeError(
-                            f"MiniMax returned a JSON array with no dict element after retry: {retry_json_str[:200]}"
+                        # Both attempts returned arrays — build a safe fallback dict
+                        # so the caller can still proceed rather than crashing.
+                        logger.error(
+                            "MiniMax returned a JSON array after retry; using schema fallback. "
+                            "Raw: %s", retry_json_str[:200]
                         )
+                        parsed = self._build_schema_fallback(schema)
 
-            # Basic schema validation (keys exist)
+            # Fill any missing required keys with safe defaults
             required = schema.get("required", [])
+            properties = schema.get("properties", {})
             for key in required:
-                if key not in parsed:
-                    logger.warning(f"MiniMax output missing required key: {key}")
-                    parsed[key] = None  # Fallback to prevent crashes
+                if key not in parsed or parsed[key] is None:
+                    prop = properties.get(key, {})
+                    t = prop.get("type", "string")
+                    if t == "array":
+                        parsed[key] = []
+                    elif t == "boolean":
+                        parsed[key] = False
+                    elif t == "object":
+                        parsed[key] = {}
+                    else:
+                        parsed[key] = ""
 
             return parsed
+
         except json.JSONDecodeError as e:
-            logger.error(f"MiniMax returned invalid JSON: {e}")
-            logger.error(f"Raw content: {content}")
-            logger.error(f"Extracted JSON string: {json_str if 'json_str' in locals() else 'N/A'}")
-            raise RuntimeError(f"MiniMax JSON decode error: {e}") from e
+            logger.error("MiniMax returned invalid JSON: %s", e)
+            logger.error("Raw content: %s", locals().get("content", "N/A"))
+            logger.warning(
+                "Using schema fallback due to JSON decode error — "
+                "downstream agents will receive empty/default values for: %s",
+                list(schema.get("required", [])),
+            )
+            return self._build_schema_fallback(schema)
+        except RuntimeError:
+            raise  # Already formatted — let it propagate
         except Exception as e:
-            logger.error(f"MiniMax constrained generation failed: {e}")
+            logger.error("MiniMax constrained generation failed: %s", e)
             raise RuntimeError(f"MiniMax API error: {e}") from e
 
     # ========================================================================

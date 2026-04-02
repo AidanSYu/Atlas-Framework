@@ -19,11 +19,9 @@ import {
   AlertTriangle,
   ArrowRight,
   Network,
-  Beaker,
   Zap,
   FileText,
   Search,
-  FlaskConical,
   History,
 } from 'lucide-react';
 import CitationCard from '@/components/generative/CitationCard';
@@ -82,16 +80,6 @@ const QUICK_QUERIES: Record<string, { queries: string[]; title: string; desc: st
       'What is the strongest evidence for...?',
       'Write a critical analysis of...',
       'Evaluate the methodology of...',
-    ],
-  },
-  discovery: {
-    title: 'Discovery OS',
-    desc: 'Deterministic chemistry tools — computed, not generated.',
-    queries: [
-      'Predict properties of aspirin (CC(=O)Oc1ccccc1C(=O)O)',
-      'Check toxicity of caffeine',
-      'Search literature about EGFR inhibitors',
-      'Compare drug-likeness of ibuprofen vs naproxen',
     ],
   },
 };
@@ -235,7 +223,6 @@ function getModeIcon(mode: string) {
     case 'librarian': return BookOpen;
     case 'cortex': return Brain;
     case 'moe': return Network;
-    case 'discovery': return Beaker;
     default: return BookOpen;
   }
 }
@@ -245,7 +232,6 @@ function getModeColor(mode: string) {
     case 'librarian': return 'from-primary/20 to-primary/5';
     case 'cortex': return 'from-accent/20 to-accent/5';
     case 'moe': return 'from-blue-500/20 to-blue-500/5';
-    case 'discovery': return 'from-orange-500/20 to-orange-500/5';
     default: return 'from-primary/20 to-primary/5';
   }
 }
@@ -255,7 +241,6 @@ function getModeIconColor(mode: string) {
     case 'librarian': return 'text-primary';
     case 'cortex': return 'text-accent';
     case 'moe': return 'text-blue-500';
-    case 'discovery': return 'text-orange-500';
     default: return 'text-primary';
   }
 }
@@ -448,7 +433,8 @@ export function ConversationView({
             className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             {message.role === 'assistant' && (
-              <div className={`mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${message.brainActivity
+              <div className={`mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
+                message.brainActivity
                 ? message.brainActivity.brain.includes('MoE')
                   ? 'bg-gradient-to-br from-blue-500/20 to-blue-500/10 border border-blue-500/20'
                   : 'bg-gradient-to-br from-accent/20 to-accent/10 border border-accent/20'
@@ -470,7 +456,9 @@ export function ConversationView({
               <div
                 className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${message.role === 'user'
                   ? 'bg-gradient-to-br from-primary to-primary/90 text-primary-foreground rounded-br-sm shadow-sm'
-                  : 'rounded-bl-sm border border-border bg-card text-foreground'
+                  : (message as any).isThinking
+                    ? 'rounded-bl-sm border border-emerald-500/20 bg-emerald-500/5 text-emerald-300/90 font-mono text-xs'
+                    : 'rounded-bl-sm border border-border bg-card text-foreground'
                   }`}
               >
                 {message.role === 'assistant' ? (

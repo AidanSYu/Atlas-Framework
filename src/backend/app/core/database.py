@@ -215,6 +215,7 @@ class DiscoverySession(Base):
     __tablename__ = "discovery_sessions"
 
     id = Column(String, primary_key=True, default=_generate_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=True, index=True)
     target_params = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -256,6 +257,22 @@ def get_session():
     return _SessionLocal()
 
 
+def _run_migrations(engine) -> None:
+    """Apply lightweight additive migrations for schema evolution."""
+    with engine.connect() as conn:
+        # Add project_id to discovery_sessions if missing (added for workspace isolation)
+        try:
+            conn.execute(text(
+                "ALTER TABLE discovery_sessions ADD COLUMN project_id TEXT REFERENCES projects(id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_discovery_sessions_project_id ON discovery_sessions(project_id)"
+            ))
+            conn.commit()
+        except Exception:
+            pass  # Column already exists — SQLite raises OperationalError, safe to ignore
+
+
 def init_db():
     """Initialize database and create all tables.
 
@@ -267,6 +284,7 @@ def init_db():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         Base.metadata.create_all(engine)
+        _run_migrations(engine)
         return engine
     except Exception as e:
         raise RuntimeError(f"FATAL: Database initialization failed: {e}") from e

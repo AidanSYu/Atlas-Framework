@@ -28,17 +28,31 @@ class PropertyPredictorPlugin(BasePlugin):
         return None
 
     async def execute(self, model: Any, **kwargs) -> dict:
-        """Calculate molecular properties for a SMILES string.
+        """Calculate molecular properties for one or many SMILES.
 
         Args (in kwargs):
-            smiles: str -- SMILES representation of the molecule.
+            smiles_list: list[str] -- Batch mode (preferred in pipeline).
+            smiles: str            -- Single-molecule mode (legacy).
 
         Returns:
-            Dict with molecular descriptors and Lipinski check.
+            Batch mode:  {"properties": [...], "summary": "..."}
+            Single mode: {"smiles": ..., "valid": ..., "MolWt": ..., ...}
         """
+        smiles_list = kwargs.get("smiles_list")
+        if smiles_list and isinstance(smiles_list, list):
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._compute_batch, smiles_list)
         smiles = kwargs.get("smiles", "")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._compute, smiles)
+
+    def _compute_batch(self, smiles_list: list) -> dict:
+        results = [self._compute(smi) for smi in smiles_list if (smi or "").strip()]
+        valid_count = sum(1 for r in results if r.get("valid"))
+        return {
+            "properties": results,
+            "summary": f"Properties computed for {valid_count}/{len(results)} molecules.",
+        }
 
     def _compute(self, smiles: str) -> dict:
         from rdkit import Chem

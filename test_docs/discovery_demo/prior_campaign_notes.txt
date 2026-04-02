@@ -1,0 +1,21 @@
+Campaign note: KRAS-Alpha-02
+
+Summary of prior round:
+- 126 compounds synthesized from a benzothiophene-acrylamide starter series.
+- 14 compounds reached biochemical IC50 < 500 nM.
+- 4 compounds reached cellular EC50 < 1500 nM.
+
+Observed liabilities:
+- Naphthalene-rich variants increased hERG liabilities.
+- Highly lipophilic analogs (LogP > 5.2) showed low solubility and erratic PK.
+- Nitro-aniline substitutions correlated with Ames-positive signals in external panel.
+
+Scaffold guidance:
+- Keep covalent warhead placement at para orientation where possible.
+- Bias toward heteroaromatic replacements to reduce cLogP while preserving potency.
+- Retain one hydrogen bond acceptor near the hinge-facing region.
+
+Do not repeat:
+- Fused bicyclic hydrophobes with no polar exit vectors.
+- Poly-halogenated tails with poor clearance.
+

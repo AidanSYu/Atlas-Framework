@@ -5,7 +5,7 @@ Runs on CPU via ONNX Runtime to avoid GPU VRAM contention with the LLM.
 """
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from app.services.plugins.base import BasePlugin
 
@@ -27,14 +27,23 @@ class RetrosynthesisPlugin(BasePlugin):
         )
 
     async def load(self) -> Any:
-        """Lazy-load the AiZynthFinder ONNX model into memory."""
+        """Lazy-load the AiZynthFinder ONNX model into memory.
+
+        Returns None (skip sentinel) if aizynthfinder is not installed so the
+        pipeline continues without hard-erroring on an optional dependency.
+        """
         try:
-            from aizynthfinder.aizynthfinder import AiZynthFinder
+            import importlib.util
+            if importlib.util.find_spec("aizynthfinder") is None:
+                raise ImportError("aizynthfinder not installed")
         except ImportError:
-            raise RuntimeError("aizynthfinder is not installed. Run `pip install aizynthfinder`.")
+            logger.warning(
+                "aizynthfinder is not installed — plan_synthesis stage will be skipped. "
+                "Install with: pip install aizynthfinder"
+            )
+            return None  # skip sentinel
 
         logger.info("Loading AiZynthFinder model (this may take a moment)...")
-        # Run in executor to avoid blocking the event loop during model load
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._load_model_sync)
 
@@ -62,12 +71,22 @@ class RetrosynthesisPlugin(BasePlugin):
             smiles: str -- SMILES representation of the target molecule.
 
         Returns:
-            Dict containing the top synthesis routes.
+            Dict containing the top synthesis routes, or a skip dict if
+            aizynthfinder is not installed.
         """
+        if model is None:
+            return {
+                "skipped": True,
+                "reason": "aizynthfinder is not installed",
+                "summary": (
+                    "Retrosynthesis skipped — aizynthfinder not installed. "
+                    "Run: pip install aizynthfinder"
+                ),
+            }
         smiles = kwargs.get("smiles", "")
         if not smiles:
             return {"valid": False, "error": "Missing 'smiles' argument."}
-            
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._compute, model, smiles)
 
@@ -111,9 +130,6 @@ class RetrosynthesisPlugin(BasePlugin):
                 if not nodes and "nodes" in route:
                     nodes = route["nodes"]
                     
-                materials = []
-                reactions = []
-                
                 # Very simplified summary
                 # Extracting the full tree into a clean linear text format can be complex
                 # We'll rely on the built-in properties if available

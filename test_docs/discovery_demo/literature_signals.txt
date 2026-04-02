@@ -1,0 +1,18 @@
+Literature signal digest (mock extraction)
+
+Signal 1:
+- Switch-II pocket occupancy correlates with durable pathway suppression in KRAS G12C models.
+- Covalent anchor placement must preserve geometric alignment with Cys12 side chain.
+
+Signal 2:
+- Overly lipophilic scaffolds frequently fail due to permeability-solubility tradeoff.
+- Balanced physicochemical windows outperform maximal docking-only optimization.
+
+Signal 3:
+- Off-target hERG events appear enriched in flat polyaromatic scaffolds.
+- Moderated aromatic density and polar substituent balance reduce risk.
+
+Signal 4:
+- Rapid progression compounds share a practical synthesis route and procurement path.
+- Early route feasibility should be integrated before final prioritization.
+

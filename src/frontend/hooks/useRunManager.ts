@@ -20,14 +20,13 @@ import type {
   CandidateArtifact,
 } from '@/lib/discovery-types';
 
-export type ChatMode = 'librarian' | 'cortex' | 'moe' | 'discovery' | 'coordinator';
+export type ChatMode = 'librarian' | 'cortex' | 'moe';
 
 const INTENT_TO_MODE: Record<string, ChatMode> = {
   SIMPLE: 'librarian',
   DEEP_DISCOVERY: 'cortex',
   BROAD_RESEARCH: 'cortex',
   MULTI_STEP: 'moe',
-  DISCOVERY: 'discovery',
 };
 
 export function intentToMode(intent: string): ChatMode {
@@ -156,17 +155,6 @@ function getStreamEndpoint(
       return isMoeHypotheses
         ? { url: `${base}/api/moe/hypotheses`, body: commonBody }
         : { url: `${base}/api/moe/stream`, body: commonBody };
-    case 'discovery': {
-      const body: Record<string, any> = { ...commonBody };
-      if (spectrumFilePath) body.spectrum_file_path = spectrumFilePath;
-      return { url: `${base}/api/discovery/stream`, body };
-    }
-    case 'coordinator':
-      // Coordinator uses session_id in the URL path
-      return {
-        url: `${base}/api/discovery/${sessionId || 'unknown'}/coordinator/chat`,
-        body: { message: query || null, project_id: projectId },
-      };
     default:
       return { url: `${base}/api/swarm/stream`, body: commonBody };
   }

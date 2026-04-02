@@ -12,7 +12,7 @@ qdrant-client>=1.12.0
 
 # LLM & Embeddings (bundled for desktop app)
 # For GPU: pip install llama-cpp-python==0.2.83 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 (then reinstall other deps if needed)
-llama-cpp-python>=0.3.4   # For GPU: add --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+llama-cpp-python==0.2.83
 sentence-transformers>=2.3.1
 huggingface-hub>=0.20.0
 einops>=0.7.0
@@ -64,9 +64,6 @@ bm25s>=0.2.0              # Fast sparse keyword retrieval (BM25)
 duckduckgo-search>=6.0.0  # Web fallback for Retrieval Expert
 
 # Discovery OS: Deterministic Chemistry Plugins (Phase 1)
-rdkit>=2024.3.1           # Molecular properties, SMARTS matching (CPU only)
-aizynthfinder>=3.7.0      # Retrosynthesis planning (USPTO ONNX models + ZINC stock)
-admet-ai>=0.1.0           # ADMET property prediction (hERG, DILI, Caco2, CYP3A4)
 
 # Discovery OS: Spectroscopy & Closed Loop (Phase 3)
 nmrglue>=0.9              # JCAMP-DX (.jdx) NMR file reading, peak picking

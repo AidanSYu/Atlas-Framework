@@ -191,6 +191,7 @@ export function MissionControl({ projectId, onSuccess, onCancel }: MissionContro
       propertyConstraints,
       domainSpecificConstraints: parseDomainSpecificConstraints(domainSpecificText),
       corpusDocumentIds,
+      projectId,
     };
     try {
       const res = await fetch(`${getApiBase()}/api/discovery/initialize`, {

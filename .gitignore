@@ -9,7 +9,27 @@ models/*.bin
 *.pt
 *.pth
 *.onnx
+*.hdf5
+*.csv.gz
 src/backend/test_output.txt
+
+# --- Local Config (machine-specific paths) ---
+config.yml
+.claude/settings.local.json
+
+# --- Local Analysis & Scratch Files ---
+benchmark/
+check_orphans.py
+orphans.txt
+orphans_result.json
+test_minimal.py
+test_model.py
+test_output.txt
+src/backend/app/services/plugins/*-AidanYu.py
+
+# --- TypeScript Build Cache ---
+tsconfig.tsbuildinfo
+*.tsbuildinfo
 
 # ===========================
 
@@ -62,6 +82,8 @@ Thumbs.db
 
 # --- Database ---
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 data/

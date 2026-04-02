@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-**Atlas 2.0** (Is a software by ContAInuum) is an AI-native knowledge management desktop application that builds a continuous knowledge layer beneath an AI model. It is a **standalone Windows desktop application** powered by a Multi-Agent LangGraph Architecture.
+**Atlas 2.0** (codename: ContAInuum) is an AI-native knowledge management desktop application that builds a continuous knowledge layer beneath an AI model. It is a **standalone Windows desktop application** powered by a Multi-Agent LangGraph Architecture.
 
 **Core Philosophy**: "The AI does not know things. It queries a living knowledge substrate."
 
@@ -111,18 +111,40 @@ Project Root
 │   │   │   │   └── qdrant_store.py  # Vector store
 │   │   │   └── services/
 │   │   │       ├── agents/          # LangGraph agents
-│   │   │       │   ├── discovery_graph.py
-│   │   │       │   ├── experts/     # MoE experts
+│   │   │       │   ├── coordinator.py      # Discovery OS — HITL session bootstrapper
+│   │   │       │   ├── executor.py         # Discovery OS — script-generation sandbox
+│   │   │       │   ├── pipeline_planner.py # Deterministic plugin pipeline orchestrator
+│   │   │       │   ├── discovery_chat.py  # Unified chat orchestrator (all phases)
+│   │   │       │   ├── discovery_graph.py  # Navigator (deep graph walk)
+│   │   │       │   ├── experts/            # MoE experts
 │   │   │       │   ├── librarian.py
 │   │   │       │   ├── meta_router.py
 │   │   │       │   └── supervisor.py
+│   │   │       ├── plugins/               # Chemistry plugin registry
+│   │   │       │   ├── __init__.py        # BasePlugin ABC + PluginManager singleton + built-in tools
+│   │   │       │   ├── base.py            # BasePlugin abstract class definition
+│   │   │       │   ├── admet_predict.py   # ADMET property prediction (hERG, DILI, Caco2, CYP3A4)
+│   │   │       │   ├── sa_scorer.py       # Synthetic accessibility scoring (SA 1-10)
+│   │   │       │   ├── standardize.py     # SMILES canonicalization + InChIKey + dedup (RDKit)
+│   │   │       │   ├── properties.py      # RDKit molecular property predictor (MW, LogP, TPSA, HBD, HBA)
+│   │   │       │   ├── retrosynthesis.py  # AiZynthFinder ONNX retrosynthesis (plan_synthesis)
+│   │   │       │   ├── spectrum.py        # NMR .jdx verifier via nmrglue (verify_spectrum)
+│   │   │       │   ├── strategy.py        # Synthesis route scoring + viability (evaluate_strategy)
+│   │   │       │   └── toxicity.py        # SMARTS/PAINS structural alert screening
+│   │   │       ├── candidate_generation.py # LLM+RAG candidate generation + RDKit screening (SSE)
 │   │   │       ├── chat.py
+│   │   │       ├── discovery_llm.py        # Isolated LLM service for Discovery OS
+│   │   │       ├── discovery_session.py    # Session CRUD + SessionMemoryService
 │   │   │       ├── document.py
+│   │   │       ├── domain_tools.py         # Molecular/entity rendering + capability gap storage
 │   │   │       ├── graph.py
 │   │   │       ├── ingest.py
 │   │   │       ├── llm.py
 │   │   │       ├── retrieval.py
-│   │   │       └── swarm.py
+│   │   │       ├── spectroscopy.py         # Mock retrosynthesis route planning (SSE streaming)
+│   │   │       ├── stage_context.py        # contextvars bridge — injects epoch state into LLM prompts
+│   │   │       ├── swarm.py
+│   │   │       └── synthesis_memory.py     # SynthesisAttempt graph node + Qdrant embedding (compound moat)
 │   │   ├── data/           # Runtime data (uploads, drafts)
 │   │   ├── models/         # AI model storage
 │   │   ├── requirements.txt
@@ -134,11 +156,58 @@ Project Root
 │   │   │   ├── page.tsx
 │   │   │   └── project/
 │   │   ├── components/     # React components
-│   │   │   ├── chat/       # Chat-related components
+│   │   │   ├── chat/
+│   │   │   │   ├── ChatShell.tsx          # Unified chat shell (all modes including coordinator)
+│   │   │   │   ├── CommandSurface.tsx     # Input area + routing badge + mode override
+│   │   │   │   ├── ConversationView.tsx   # Message rendering + generative UI + follow-up pills
+│   │   │   │   ├── RunProgressDisplay.tsx # Streaming telemetry card
+│   │   │   │   ├── RunErrorDisplay.tsx    # Error taxonomy + retry
+│   │   │   │   ├── RunAuditPanel.tsx      # Slide-over run history + event timeline
+│   │   │   │   └── index.ts              # Re-exports
+│   │   │   ├── discovery/
+│   │   │   │   ├── DiscoveryChat.tsx      # Unified discovery chat (setup→Q&A→plan→execute→analyze)
+│   │   │   │   ├── PlanCard.tsx           # Execution plan card (accept/reject)
+│   │   │   │   ├── ToolCallCard.tsx       # Inline tool execution display
+│   │   │   │   ├── ResultsSummary.tsx     # AI analysis + recommendations
+│   │   │   │   └── index.ts              # Re-exports
+│   │   │   ├── AppMenuBar.tsx             # Native-style application menu bar
+│   │   │   ├── BioassayFeedbackForm.tsx   # Stage 7: experimental result submission
+│   │   │   ├── CandidateArtifact.tsx      # Stage 4: candidate card with approve/reject
+│   │   │   ├── CapabilityGapArtifact.tsx  # Capability gap display card
+│   │   │   ├── ChatHistoryPanel.tsx       # Chat history side panel
+│   │   │   ├── DiscoveryWorkbench.tsx     # Terminal-style execution progress UI
+│   │   │   ├── DiscoveryWorkspaceTab.tsx  # Main discovery workspace (panels + session mgmt)
+│   │   │   ├── DocumentTabs.tsx           # Multi-document tab navigation
+│   │   │   ├── EntityHotspot.tsx          # Inline entity highlighting + hover card
+│   │   │   ├── EpochNavigator.tsx         # Epoch tree browser (branching research graph)
+│   │   │   ├── ExecutionPipeline.tsx      # Pipeline execution progress display
+│   │   │   ├── JobsQueue.tsx              # Async jobs queue display
+│   │   │   ├── MissionControl.tsx         # Stage 1 PRIME modal (domain + constraints setup)
+│   │   │   ├── PluginManager.tsx          # Plugin registry viewer
+│   │   │   ├── ScriptApprovalModal.tsx    # Executor script review: approve/edit/reject
+│   │   │   ├── SpectroscopyArtifact.tsx   # Stage 6: NMR/XRD peak comparison
+│   │   │   ├── StructureCompletionSuggestion.tsx # Structure auto-complete suggestions
+│   │   │   ├── TextViewer.tsx             # .txt/.md/.csv/.json viewer
+│   │   │   ├── WindowControls.tsx         # Custom window chrome controls
+│   │   │   ├── WorkspaceTabs.tsx          # Main workspace tab bar
 │   │   │   ├── canvas/     # Graph canvas nodes
-│   │   │   └── generative/ # Generative UI components
+│   │   │   └── generative/ # Generative UI components (CitationCard, ComparisonTable, MetricCard)
+│   │   ├── hooks/
+│   │   │   ├── useGoldenPathPipeline.ts   # Orchestrates Stage 2→3→4 (generate + screen + surface)
+│   │   │   ├── usePanelResize.ts          # Panel resize drag logic
+│   │   │   ├── useRunManager.ts           # Streaming orchestration (SSE → runStore)
+│   │   │   └── useStructureCompletion.ts  # SMILES structure auto-complete suggestions
+│   │   ├── stores/
+│   │   │   ├── chatStore.ts       # Per-mode message arrays (Zustand + localStorage persist)
+│   │   │   ├── discoveryStore.ts  # Discovery OS Golden Path state (Epochs, stages, artifacts)
+│   │   │   ├── discoveryConversationStore.ts # Per-session chat messages (Zustand + localStorage)
+│   │   │   ├── runStore.ts        # Run audit history (Zustand + IndexedDB, 500 max)
+│   │   │   └── toastStore.ts      # Global notifications
 │   │   ├── lib/            # Utilities & API client
-│   │   │   └── api.ts      # Backend API client
+│   │   │   ├── api.ts              # Backend API client (all endpoints + types)
+│   │   │   ├── discovery-types.ts  # Discovery OS Golden Path type definitions
+│   │   │   ├── stream-adapter.ts   # Unified SSE parser + NormalizedEvent types
+│   │   │   └── truncate-payload.ts # SSE payload size limiter (prevents context blowup)
 │   │   ├── public/         # Static assets
 │   │   ├── package.json
 │   │   └── tsconfig.json
@@ -149,6 +218,8 @@ Project Root
 │       ├── tauri.conf.json
 │       └── resources/      # Bundled backend (gitignored)
 ├── tests/                  # Test scripts and benchmarks
+├── docs/                   # Architecture plans and design docs
+│   └── DiscoveryOS_ChemistryEngine_Plan.md  # EntityIR + Chemistry Engine design
 ├── .venv/                  # Python virtual environment
 ├── package.json            # Root npm scripts
 ├── CLAUDE.md               # Claude Code specific guidance
@@ -398,6 +469,233 @@ Meta-Router (Intent Classification)
 | Navigator | `services/agents/discovery_graph.py` | Deep graph exploration |
 | Supervisor | `services/agents/supervisor.py` | Coordinates MoE |
 | Experts | `services/agents/experts/` | Specialized sub-agents |
+| Coordinator | `services/agents/coordinator.py` | HITL session bootstrapping |
+| Executor | `services/agents/executor.py` | Script-generation sandbox |
+| Pipeline Planner | `services/agents/pipeline_planner.py` | Deterministic plugin pipeline orchestrator |
+| Discovery Chat | `services/agents/discovery_chat.py` | Unified chat orchestrator (coordinator + Q&A + plan + execute + analyze) |
+
+---
+
+## Discovery OS Architecture
+
+Discovery OS is a **scientific research automation system**, not a chatbot. It operates via a 3-phase pipeline that gives researchers full transparency and control over autonomous chemistry/science workflows.
+
+### Philosophy
+
+> The agent writes **Python scripts**, not text answers. Deterministic tools (RDKit, pandas, NumPy) replace LLM hallucination. Every artifact is readable and editable by the researcher.
+
+### Phase Flow
+
+```
+1. MissionControl (Frontend)
+   └─> POST /api/discovery/initialize
+       Creates SQLite row + disk folder: data/discovery/{session_id}/
+
+2. Coordinator Agent (HITL — up to 5 turns)
+   └─> POST /api/discovery/{session_id}/coordinator/chat  (SSE)
+       - Scans corpus via RetrievalService
+       - Reads .md files from session folder (CONSTRAINTS.md, HYPOTHESES.md, etc.)
+       - LLM (DeepSeek) identifies missing goals via interrupt() + user Q&A
+       - Writes SESSION_CONTEXT.md + session_memory.json on completion
+
+3. Executor Agent (Script Sandbox Loop)
+   └─> POST /api/discovery/{session_id}/executor/start  (SSE)
+       - Reads session_memory.json for goals
+       - plan_task → generate_script → [human approval] → execute_script → loop
+       - Each iteration appends results to FINDINGS.md
+       - Loops until all goals satisfied or max_iterations reached
+
+4. Pipeline Planner (Deterministic Plugin Pipeline)
+   └─> POST /api/discovery/{session_id}/pipeline/run  (SSE)
+       - Rule-based plugin selection (no LLM) based on session goals + constraints
+       - Canonical order: standardize → predict → toxicity → SA score → ADMET → strategy
+       - Batches single-SMILES plugins, streams stage progress
+       - Saves pipeline_results.json + updates FINDINGS.md
+```
+
+### LLM Role Split (Critical)
+
+| Role | Model | Purpose |
+|------|-------|---------|
+| Orchestration | **DeepSeek** (`orchestrate_constrained`) | Coordinator reasoning, goal extraction, planning |
+| Tool Calls | **MiniMax** (`generate_constrained`) | Script generation, structured JSON output |
+
+**Rule**: MiniMax must NEVER be used for coordinator-level reasoning — it returns arrays instead of objects. Always use `orchestrate_constrained` (DeepSeek) for the Coordinator and `generate_constrained` (MiniMax) for Executor planning/scripting.
+
+### Living .md Knowledge Substrate
+
+Session folder `data/discovery/{session_id}/` is the agent's working memory. Knowledge accumulates in files across iterations:
+
+| File | Written by | Purpose |
+|------|-----------|---------|
+| `SESSION_CONTEXT.md` | Coordinator | Perpetual living context — goals, domain, corpus summary |
+| `FINDINGS.md` | Executor | Auto-appended after every successful script run |
+| `CONSTRAINTS.md` | User (optional) | Domain constraints — agents auto-read before each run |
+| `HYPOTHESES.md` | User or agent | Guides iteration direction |
+| `RESEARCH_NOTES.md` | User (optional) | Background knowledge |
+| `session_memory.json` | Coordinator | Machine-readable state for multi-agent coordination |
+| `generated/` | Executor | Scripts (`.py`), results (`.csv`), logs (`execution_log.txt`), plots (`.png`) |
+
+Both `_read_session_notes()` and `_read_key_artifacts()` are injected into every agent prompt at the start of each run — this is how the "living knowledge substrate" works.
+
+### Executor Script Loop (Detail)
+
+```
+plan_task (MiniMax)
+    ├─ Reads: session_memory.json, all .md files, execution_log.txt tail, latest CSV
+    └─> generate_script (MiniMax)
+            ├─ Writes Python script to generated/{filename}.py
+            └─> [await_approval] interrupt() — user approves / edits / rejects
+                    └─> execute_script — subprocess.run() with 5-min timeout
+                            ├─ Appends to execution_log.txt
+                            ├─ Appends to FINDINGS.md
+                            └─> plan_task (loop) OR END
+```
+
+Resume commands passed to `Command(resume=...)`:
+- `"approve"` — execute as-is
+- `"reject"` — stop session
+- `"edit:<new_code>"` — replace script code then execute
+
+### Coordinator Agent (Detail)
+
+LangGraph HITL using `interrupt()` + `Command(resume=user_answer)`:
+
+```
+scan_corpus
+    ├─ Queries RetrievalService (vector + graph)
+    ├─ Reads all .md files from session folder
+    └─> analyze_and_ask (loop, max 5 turns)
+            ├─ DeepSeek extracts goals, identifies missing context
+            ├─ interrupt() → surfaces question + options to frontend
+            ├─ On resume: merges new goals, checks 5 required criteria:
+            │     1. Research domain
+            │     2. Primary objective / biological target
+            │     3. Property constraints (MW, LogP, TPSA)
+            │     4. Forbidden substructures / exclusion criteria
+            │     5. Success criteria and evaluation metrics
+            └─> END → _finalize_coordinator() writes session_memory.json + SESSION_CONTEXT.md
+```
+
+Thread IDs avoid collision: `f"coordinator-{session_id}"` and `f"executor-{session_id}"`.
+
+### Plugin System (`services/plugins/`)
+
+Chemistry plugins are deterministic (no LLM) and follow a `BasePlugin` ABC defined in `__init__.py`. The `PluginManager` singleton auto-discovers and registers plugins at startup.
+
+| Plugin name | File | Purpose |
+|-------------|------|---------|
+| `standardize` | `standardize.py` | SMILES canonicalization, InChIKey generation, deduplication (RDKit) |
+| `predict_properties` | `properties.py` | RDKit molecular properties: MW, LogP, TPSA, HBD, HBA, RotBonds |
+| `check_toxicity` | `toxicity.py` | SMARTS/PAINS structural alert screening (curated Brenk set + RDKit FilterCatalog) |
+| `sa_scorer` | `sa_scorer.py` | Synthetic accessibility scoring (SA 1-10, feasibility threshold ≤ 6.0) |
+| `admet_predict` | `admet_predict.py` | ADMET prediction (hERG, DILI, Caco2, CYP3A4) — `admet_ai` or mock heuristics |
+| `plan_synthesis` | `retrosynthesis.py` | AiZynthFinder ONNX retrosynthesis; falls back to heuristic if model absent |
+| `verify_spectrum` | `spectrum.py` | NMR .jdx analysis via nmrglue + scipy peak detection; compares to RDKit hydrogen count |
+| `evaluate_strategy` | `strategy.py` | Scores retrosynthesis routes by step count, complexity, and estimated viability |
+| `search_literature` | `__init__.py` | Bridges to existing hybrid RAG retrieval service |
+
+All plugins extend `BasePlugin` (defined in `base.py`) and gracefully degrade when optional dependencies (RDKit, `admet_ai`, nmrglue, AiZynthFinder) are unavailable.
+
+### Pipeline Planner (`agents/pipeline_planner.py`)
+
+Deterministic, rule-based orchestrator that replaces LLM-based script generation for standard chemistry workflows. Selects and orders plugins based on session goals and constraints — no LLM involved in pipeline construction.
+
+Canonical plugin order:
+```
+standardize → predict_properties → check_toxicity → sa_scorer → admet_predict → strategy
+```
+
+SSE events emitted during pipeline execution:
+- `pipeline_planning` — selected stages + molecule count
+- `pipeline_stage_start` / `pipeline_stage_complete` — per-stage progress
+- `pipeline_complete` — final summary + artifact list
+
+### Discovery LLM Service (`discovery_llm.py`)
+
+`DiscoveryLLMService` is **completely isolated** from the global `LLMService` used for chat/retrieval. It maintains its own API clients and configuration so global model changes don't affect active discovery sessions.
+
+```python
+# Two entry points:
+llm_service.orchestrate_constrained(prompt, schema)   # → DeepSeek (coordinator)
+llm_service.generate_constrained(prompt, schema)       # → MiniMax via LiteLLM (executor)
+```
+
+Config keys (in `config/.env`):
+```bash
+DEEPSEEK_API_KEY=xxx        # Required — coordinator reasoning
+MINIMAX_API_KEY=xxx         # Required — executor script generation
+DISCOVERY_ORCHESTRATION_MODEL=deepseek-reasoner
+DISCOVERY_TOOL_MODEL=MiniMax-M2.5
+```
+
+### Discovery Session Service (`discovery_session.py`)
+
+| Class | Purpose |
+|-------|---------|
+| `DiscoverySessionService` | CRUD for sessions — initialize, list, get files, update goals |
+| `SessionMemoryService` | Read/write `session_memory.json` + `SESSION_CONTEXT.md` |
+| `SessionMemoryData` | Pydantic model — shared state for multi-agent coordination |
+
+### Candidate Generation Service (`candidate_generation.py`)
+
+Two async SSE generators that cover the Stage 2→3 pipeline:
+
+- **`generate_candidates(session_id, mock=False)`** — queries corpus via RAG + LLM to propose SMILES strings. `mock=True` returns a fixed set of known molecules (aspirin, ibuprofen, etc.) for frontend testing without LLM tokens.
+- **`screen_candidates(candidates, constraints, mock=False)`** — deterministic RDKit property calculations (MW, LogP, TPSA, HBD, HBA, QED) filtered against session constraints. Emits per-candidate SSE events with pass/fail per property.
+
+### Domain Tools (`domain_tools.py`)
+
+Stateless helpers for domain-agnostic rendering and persistence:
+- **Molecular / entity rendering**: RDKit SVG generation with fallback for non-chemistry domains
+- **Capability gap storage**: Creates a `CapabilityGap` SQLAlchemy node in the session folder so gaps survive restarts and are surfaced in the coordinator's next scan
+
+### Stage Context Bridge (`stage_context.py`)
+
+Uses `contextvars.ContextVar` to inject the current epoch/artifact state into every `generate_chat()` call without threading issues. The frontend bundles `stage_context` in the request body; the route handler calls `set_stage_preamble(stage_context)` which is then transparently prepended as a system message for that request only. No cross-request leakage.
+
+Stage labels (1=PRIME, 2=GENERATE, 3=SCREEN, 4=SURFACE, 5=SYNTHESIS_PLAN, 6=SPECTROSCOPY, 7=FEEDBACK) are injected so the LLM always knows where in the Golden Path it is.
+
+### Synthesis Memory (`synthesis_memory.py`)
+
+Creates the "compound moat" — every experiment cycle deposits long-lived memory that accumulates across sessions:
+
+1. Writes a `SynthesisAttempt` node + `ATTEMPTED_VIA` edge to the SQLite knowledge graph (linked to the molecule node via InChIKey)
+2. Embeds a human-readable summary into Qdrant so future `search_literature` calls automatically surface prior experiments for structurally similar molecules
+3. Provides a Tanimoto-similarity query (`find_similar_attempts`) to surface past work on related scaffolds
+
+All DB operations run in `asyncio.run_in_executor()` to avoid blocking the event loop.
+
+### Discovery API Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/discovery/schema` | Get domain schemas (property constraints, operators) |
+| `POST /api/discovery/initialize` | Create session (SQLite row + disk folder) |
+| `GET /api/discovery/sessions` | List all sessions |
+| `GET /api/discovery/{id}/files` | List session files (root + generated/) |
+| `GET /api/discovery/{id}/files/{path}` | Serve individual session file |
+| `GET /api/discovery/{id}/memory` | Get session memory (session_memory.json) |
+| `POST /api/discovery/{id}/chat` | SSE — **unified chat** (coordinator + Q&A + plan + execute + analyze) |
+| `POST /api/discovery/{id}/coordinator/chat` | SSE — coordinator HITL chat (legacy, still functional) |
+| `POST /api/discovery/{id}/executor/start` | SSE — start/resume executor script sandbox (legacy) |
+| `POST /api/discovery/{id}/pipeline/run` | SSE — deterministic plugin pipeline execution (legacy) |
+| `POST /api/discovery/parse-brainstorm` | Parse free-text brainstorm into structured goals |
+| `POST /api/discovery/capability-gap` | Log a capability gap to the session |
+| `POST /api/discovery/generate-candidates` | SSE — LLM+RAG candidate generation (Stage 2) |
+| `POST /api/discovery/screen` | SSE — RDKit property screening + constraint filtering (Stage 3) |
+| `POST /api/discovery/feedback` | Submit bioassay results → knowledge graph node (Stage 7) |
+| `POST /api/discovery/stream` | SSE — ReAct tool-calling loop (legacy discovery graph) |
+| `POST /api/discovery/run` | Non-streaming discovery (legacy) |
+| `POST /api/discovery/upload-spectrum` | Upload .jdx NMR spectrum file |
+| `GET /api/discovery/plugins` | List all registered plugins with metadata |
+| `POST /api/discovery/plugins/{name}/unload` | Unload a plugin from the registry |
+
+### Security Notes
+
+- Script filenames are sanitized with `os.path.basename()` and `_is_path_relative_to()` checks to prevent directory traversal before any file write or execution.
+- Scripts are AST-validated before execution to catch syntax errors early.
+- Scripts execute via `subprocess.run()` with a configurable timeout (`DISCOVERY_SCRIPT_TIMEOUT`, default 300s) and run in the `generated/` folder (not the backend root).
 
 ---
 
@@ -427,6 +725,9 @@ Key configuration options:
 - `ENABLE_RERANKING`: FlashRank reranking for RAG
 - `USE_DOCLING`: VLM-based document parsing
 - `LLM_CONTEXT_SIZE`: Token context window (default: 8192)
+- `DISCOVERY_SCRIPT_TIMEOUT`: Seconds before executor script subprocess is killed (default: 300)
+- `DISCOVERY_ORCHESTRATION_PROVIDER` / `DISCOVERY_ORCHESTRATION_MODEL`: DeepSeek config for coordinator
+- `DISCOVERY_TOOL_PROVIDER` / `DISCOVERY_TOOL_MODEL`: MiniMax config for executor
 
 ---
 
@@ -531,19 +832,56 @@ taskkill /PID <PID> /F
 | `app/api/routes.py` | All API endpoints, service initialization |
 | `app/core/config.py` | Settings, environment variables |
 | `app/core/database.py` | SQLAlchemy models, SQLite setup |
-| `app/services/llm.py` | LLM service with llama.cpp |
+| `app/services/llm.py` | LLM service with llama.cpp (chat/RAG) |
 | `app/services/retrieval.py` | Hybrid RAG (vector + graph + text) |
 | `app/services/swarm.py` | Two-brain swarm orchestration |
+| `app/services/discovery_llm.py` | Isolated LLM service for Discovery OS (DeepSeek + MiniMax) |
+| `app/services/discovery_session.py` | Session CRUD, SessionMemoryService, living .md substrate |
+| `app/services/candidate_generation.py` | LLM+RAG candidate generation + RDKit screening SSE generators |
+| `app/services/domain_tools.py` | Molecular/entity rendering + capability gap storage |
+| `app/services/stage_context.py` | contextvars bridge — epoch state injection into LLM prompts |
+| `app/services/synthesis_memory.py` | SynthesisAttempt graph node + Qdrant embedding (compound moat) |
+| `app/services/agents/discovery_chat.py` | **Unified chat orchestrator** (coordinator + Q&A + plan + execute + analyze) |
+| `app/services/agents/coordinator.py` | Coordinator HITL graph (LangGraph + interrupt()) |
+| `app/services/agents/executor.py` | Executor script-generation sandbox (LangGraph) |
+| `app/services/agents/pipeline_planner.py` | Deterministic plugin pipeline orchestrator |
+| `app/services/plugins/base.py` | BasePlugin abstract class definition |
+| `app/services/plugins/__init__.py` | PluginManager singleton + search_literature built-in |
 | `run_server.py` | PyInstaller entry point |
 
 ### Frontend Critical Files
 
 | File | Purpose |
 |------|---------|
-| `app/page.tsx` | Main application page |
-| `components/ChatInterface.tsx` | Primary chat UI |
-| `components/DualAgentChat.tsx` | Swarm interaction display |
-| `lib/api.ts` | Backend API client |
+| `app/page.tsx` | Projects dashboard |
+| `app/project/workspace-page.tsx` | Main 3-pane workspace (Library \| Stage \| Context) |
+| `components/chat/ChatShell.tsx` | Unified chat shell (all modes including coordinator) |
+| `components/chat/ConversationView.tsx` | Message rendering + generative UI + follow-up pills |
+| `components/chat/RunProgressDisplay.tsx` | Streaming telemetry display |
+| `components/chat/RunAuditPanel.tsx` | Run history slide-over drawer |
+| `components/MissionControl.tsx` | Stage 1 PRIME modal — domain + property constraints setup |
+| `components/DiscoveryWorkspaceTab.tsx` | Discovery workspace — chat-first layout (60/40 split) |
+| `components/discovery/DiscoveryChat.tsx` | Unified discovery chat (setup, Q&A, plan, tools, analysis) |
+| `components/discovery/PlanCard.tsx` | Execution plan display with accept/reject |
+| `components/discovery/ToolCallCard.tsx` | Inline tool execution display |
+| `components/discovery/ResultsSummary.tsx` | AI analysis + recommendation cards |
+| `components/DiscoveryWorkbench.tsx` | Terminal-style execution progress display (legacy) |
+| `components/ExecutionPipeline.tsx` | Pipeline stage progress display |
+| `components/EpochNavigator.tsx` | Epoch tree browser (non-linear research branching) |
+| `components/ScriptApprovalModal.tsx` | Executor script approve / edit / reject UI |
+| `components/CandidateArtifact.tsx` | Stage 4: candidate card with approve/reject |
+| `components/SpectroscopyArtifact.tsx` | Stage 6: NMR/XRD peak comparison display |
+| `components/BioassayFeedbackForm.tsx` | Stage 7: experimental result submission |
+| `components/PluginManager.tsx` | Plugin registry viewer |
+| `hooks/useRunManager.ts` | Streaming orchestration (SSE → runStore) |
+| `hooks/useGoldenPathPipeline.ts` | Stage 2→3→4 pipeline orchestration hook |
+| `stores/discoveryStore.ts` | Discovery OS state (Epochs, stages, artifacts) |
+| `stores/discoveryConversationStore.ts` | Per-session chat messages (Zustand + localStorage) |
+| `stores/runStore.ts` | Run audit history (Zustand + IndexedDB) |
+| `lib/api.ts` | Backend API client (all endpoints + types) |
+| `lib/discovery-types.ts` | Discovery OS Golden Path type definitions |
+| `lib/stream-adapter.ts` | Unified SSE parser, NormalizedEvent types |
+| `lib/truncate-payload.ts` | SSE payload size limiter |
 
 ### Build & Config Critical Files
 
@@ -584,6 +922,6 @@ MIT License - See `LICENSE` file for details.
 
 ---
 
-**Last Updated**: February 2026  
-**Version**: 2.0.0  
-**Status**: Production Ready
+**Last Updated**: March 2026
+**Version**: 2.3.0
+**Status**: Discovery OS Active — Full Golden Path (Stage 1–7) + Synthesis Memory + Stage Context Bridge

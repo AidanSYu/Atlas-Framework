@@ -17,6 +17,7 @@ import {
   Beaker,
   ShieldCheck,
   ChevronDown,
+  Loader2,
 } from 'lucide-react';
 import { AgentWorkbench } from '@/components/AgentWorkbench';
 import { DiscoveryWorkbench } from '@/components/DiscoveryWorkbench';
@@ -129,15 +130,7 @@ export default function ChatShell({
   const effectiveSessionIdForCoordinator = coordinatorSessionId || sessionId;
 
   // We need an isolated message state for the Coordinator so it doesn't pollute or show Librarian chat history
-  const [coordinatorMessages, setCoordinatorMessages] = useState<any[]>([
-    {
-      id: "coordinator-welcome",
-      role: "assistant",
-      content: "I'm the **Discovery Coordinator**. I'll help bootstrap your research session by scanning your corpus and asking targeted questions about goals, constraints, and data.",
-      agent: "coordinator",
-      timestamp: Date.now()
-    }
-  ]);
+  const [coordinatorMessages, setCoordinatorMessages] = useState<any[]>([]);
   const currentMessages = isCoordinatorMode ? coordinatorMessages : (activeThread?.messages ?? []);
 
   // Coordinator question state (multiple-choice options from HITL interrupt)
@@ -352,10 +345,16 @@ export default function ChatShell({
   // -------------------------------------------------------------------------
 
   const handleSubmitWithContent = useCallback(async (userContent: string, selectedHypothesis?: boolean) => {
-    // Allow empty messages for coordinator initial trigger
-    // BUGFIX: Allow coordinator bootstrap even if another run is active (we cancel it first in useEffect)
+    // Coordinator mode: always allow submission (user is answering HITL questions).
+    // The run may still be "running" from the previous SSE stream — that's fine,
+    // startRun() will abort the old stream and create a new one.
     const isCoordinatorBootstrap = isCoordinatorMode && !userContent.trim();
-    if ((!userContent.trim() && !isCoordinatorMode) || (!isCoordinatorBootstrap && runManager.isRunning) || !projectId) return;
+    if (!isCoordinatorMode) {
+      if ((!userContent.trim()) || (runManager.isRunning) || !projectId) return;
+    } else {
+      if (!isCoordinatorBootstrap && !userContent.trim()) return;
+      if (!projectId) return;
+    }
 
     const content = userContent.trim();
     const effectiveMode = isCoordinatorMode ? 'coordinator' as ChatMode : chatMode;
@@ -557,12 +556,43 @@ export default function ChatShell({
               onProgress: (event: NormalizedEvent) => {
                 onProgress(event);
 
-                if (event.type === 'coordinator_question') {
+                if (event.type === 'coordinator_thinking') {
+                  // Stream thinking steps as chat messages so user sees live activity
+                  setCoordinatorMessages(prev => {
+                    // Merge consecutive thinking into one message to avoid spam
+                    const last = prev[prev.length - 1];
+                    if (last?.role === 'assistant' && last?.isThinking) {
+                      const updated = [...prev];
+                      updated[updated.length - 1] = {
+                        ...last,
+                        content: last.content + '\n' + event.content,
+                      };
+                      return updated;
+                    }
+                    return [...prev, {
+                      id: crypto.randomUUID(),
+                      role: 'assistant',
+                      content: event.content,
+                      agent: 'coordinator' as any,
+                      timestamp: Date.now(),
+                      isThinking: true,
+                    }];
+                  });
+                } else if (event.type === 'coordinator_question') {
                   setCoordinatorQuestion(event);
+                  // Build a rich question message with context
+                  let questionContent = '';
+                  if (event.context) {
+                    questionContent += `*${event.context}*\n\n`;
+                  }
+                  questionContent += event.question;
+                  if (event.goalsSoFar?.length > 0) {
+                    questionContent += `\n\n**Goals so far:** ${event.goalsSoFar.map((g: string) => `\`${g}\``).join(', ')}`;
+                  }
                   setCoordinatorMessages(prev => [...prev, {
                     id: crypto.randomUUID(),
                     role: 'assistant',
-                    content: event.question,
+                    content: questionContent,
                     agent: 'coordinator' as any,
                     timestamp: Date.now()
                   }]);
@@ -570,19 +600,18 @@ export default function ChatShell({
                   setCoordinatorQuestion(null);
                   onCoordinatorComplete?.(event.extractedGoals);
 
-                  // Build completion message with corpus context
-                  let completionMsg = `✅ **Session configured!** ${event.summary}\n\n`;
+                  let completionMsg = `**Session configured!** ${event.summary}\n\n`;
 
                   if (event.extractedGoals && event.extractedGoals.length > 0) {
                     completionMsg += `**Extracted Goals:**\n${event.extractedGoals.map((g: string) => `- ${g}`).join('\n')}\n\n`;
                   }
 
-                  if (event.corpusSummary) {
-                    completionMsg += `**Corpus Context (Documentation Scanned):**\n\`\`\`\n${event.corpusSummary}\n\`\`\`\n\n`;
+                  if (event.corpusEntities && event.corpusEntities.length > 0) {
+                    completionMsg += `**Key Entities Found:** ${event.corpusEntities.slice(0, 10).join(', ')}${event.corpusEntities.length > 10 ? `, +${event.corpusEntities.length - 10} more` : ''}\n\n`;
                   }
 
-                  if (event.corpusEntities && event.corpusEntities.length > 0) {
-                    completionMsg += `**Key Entities Found:** ${event.corpusEntities.slice(0, 10).join(', ')}${event.corpusEntities.length > 10 ? `, +${event.corpusEntities.length - 10} more` : ''}`;
+                  if (event.corpusSummary) {
+                    completionMsg += `**Files Written:**\n- \`SESSION_CONTEXT.md\` — living session context\n- \`CONSTRAINTS.md\` — extracted constraints\n- \`HYPOTHESES.md\` — working hypotheses\n- \`RESEARCH_NOTES.md\` — corpus summary\n- \`FINDINGS.md\` — execution log (empty)\n`;
                   }
 
                   setCoordinatorMessages(prev => [...prev, {
@@ -600,10 +629,14 @@ export default function ChatShell({
         } catch (error: any) {
           if (error?.name === 'AbortError' || error?.message?.includes('abort')) return;
           console.error('Coordinator error:', error);
+          const errMsg = error?.message || 'Unknown error';
           setCoordinatorMessages(prev => [...prev, {
             id: crypto.randomUUID(),
             role: 'assistant',
-            content: `Coordinator error: ${error?.message || 'Unknown error'}`,
+            content:
+              `Coordinator hit an error but your session is still safe.\n\n` +
+              `Details: ${errMsg}\n\n` +
+              `Try clicking send again to resume. If this repeats, verify API keys in \`config/.env\` and then retry.`,
             agent: 'coordinator' as any,
             timestamp: Date.now()
           }]);
@@ -699,7 +732,9 @@ export default function ChatShell({
   // Derived state
   // -------------------------------------------------------------------------
 
-  const isLoading = runManager.isRunning;
+  const isLoading = isCoordinatorMode
+    ? false  // Coordinator mode: NEVER disable the input — user must always be able to type/click
+    : runManager.isRunning;
   const startTime = runManager.currentRun?.startedAt ?? null;
 
   const currentAgent = AGENT_OPTIONS.find((a) => a.mode === chatMode) ?? AGENT_OPTIONS[0];
@@ -830,8 +865,21 @@ export default function ChatShell({
             </div>
           )}
 
+          {/* Coordinator thinking indicator (inline, shows current step) */}
+          {isCoordinatorMode && !coordinatorQuestion && runManager.isRunning && (
+            <div className="flex gap-3 px-1">
+              <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/20 to-emerald-500/10">
+                <Loader2 className="h-4 w-4 animate-spin text-emerald-500" />
+              </div>
+              <div className="rounded-2xl rounded-bl-sm border border-emerald-500/20 bg-card px-4 py-3 text-xs text-emerald-400">
+                {streamProgress?.message || 'Coordinator is thinking...'}
+                <span className="ml-1 inline-block h-3 w-1 animate-pulse bg-emerald-500/50 rounded-sm" />
+              </div>
+            </div>
+          )}
+
           {/* Coordinator multiple-choice options (Phase 4 HITL) */}
-          {isCoordinatorMode && coordinatorQuestion && !isLoading && (
+          {isCoordinatorMode && coordinatorQuestion && (
             <div className="shrink-0 border-t border-border bg-card/50 p-3">
               <div className="space-y-2">
                 {coordinatorQuestion.context && (

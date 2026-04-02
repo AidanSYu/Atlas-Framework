@@ -16,8 +16,6 @@ const MODE_META: Record<ChatMode, { label: string; icon: typeof BookOpen; color:
   librarian: { label: 'Librarian', icon: BookOpen, color: 'text-primary', bg: 'bg-primary/10', border: 'border-primary/20' },
   cortex: { label: 'Cortex', icon: Brain, color: 'text-accent', bg: 'bg-accent/10', border: 'border-accent/20' },
   moe: { label: 'MoE', icon: Network, color: 'text-blue-500', bg: 'bg-blue-500/10', border: 'border-blue-500/20' },
-  discovery: { label: 'Discovery', icon: Beaker, color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/20' },
-  coordinator: { label: 'Coordinator', icon: MessageSquare, color: 'text-emerald-500', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20' },
 };
 
 // ---------------------------------------------------------------------------
@@ -32,10 +30,6 @@ export interface CommandSurfaceProps {
   isLoading: boolean;
   disabled: boolean;
   chatMode: ChatMode;
-  spectrumFile: SpectrumUploadResponse | null;
-  onSpectrumUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onSpectrumRemove: () => void;
-  isUploadingSpectrum: boolean;
   streamingText?: string;
   onStopWithPartial?: (partialText: string) => void;
 
@@ -49,8 +43,6 @@ const PLACEHOLDERS: Record<ChatMode, string> = {
   librarian: 'Ask about your documents...',
   cortex: 'Deep research question...',
   moe: 'Complex synthesis query...',
-  discovery: 'Molecular properties, toxicity, chemistry...',
-  coordinator: 'Type your answer or click an option above...',
 };
 
 // ---------------------------------------------------------------------------
@@ -65,16 +57,11 @@ export function CommandSurface({
   isLoading,
   disabled,
   chatMode,
-  spectrumFile,
-  onSpectrumUpload,
-  onSpectrumRemove,
-  isUploadingSpectrum,
   streamingText = '',
   onStopWithPartial,
 
 }: CommandSurfaceProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const spectrumInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (inputRef.current) {
@@ -98,59 +85,14 @@ export function CommandSurface({
     }
   }, [onCancel, onStopWithPartial, streamingText]);
 
-  const placeholder = chatMode === 'discovery' && spectrumFile
-    ? 'Verify this spectrum against a molecule...'
-    : PLACEHOLDERS[chatMode];
+  const placeholder = PLACEHOLDERS[chatMode];
 
 
 
   return (
     <div className="shrink-0 border-t border-border/50 bg-card/80 backdrop-blur-sm">
-      {/* Spectrum file badge */}
-      {chatMode === 'discovery' && spectrumFile && (
-        <div className="mx-auto max-w-3xl px-4 pt-2">
-          <div className="inline-flex items-center gap-2 rounded-full bg-orange-500/10 border border-orange-500/20 px-3 py-1.5 text-xs text-orange-500">
-            <Beaker className="h-3 w-3" />
-            <span className="font-medium">{spectrumFile.filename}</span>
-            <button
-              onClick={onSpectrumRemove}
-              className="ml-1 rounded-full p-0.5 hover:bg-orange-500/20 transition-colors"
-              title="Remove spectrum file"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </div>
-        </div>
-      )}
-
-
-
       {/* Input area */}
       <div className="relative mx-auto max-w-3xl px-4 py-3">
-        {/* Spectrum upload button (Discovery mode only) */}
-        {chatMode === 'discovery' && (
-          <>
-            <input
-              ref={spectrumInputRef}
-              type="file"
-              accept=".jdx"
-              onChange={onSpectrumUpload}
-              className="hidden"
-            />
-            <button
-              onClick={() => spectrumInputRef.current?.click()}
-              disabled={isLoading || isUploadingSpectrum || disabled}
-              className="absolute left-6 top-1/2 -translate-y-1/2 rounded-lg p-2 text-muted-foreground hover:text-orange-500 hover:bg-orange-500/10 transition-all disabled:opacity-40"
-              title="Attach .jdx spectrum file"
-            >
-              {isUploadingSpectrum ? (
-                <Loader2 className="h-4 w-4 animate-spin text-orange-500" />
-              ) : (
-                <Paperclip className="h-4 w-4" />
-              )}
-            </button>
-          </>
-        )}
 
         <div className="flex items-end gap-2 rounded-2xl border border-border/40 bg-surface/30 transition-all focus-within:border-border/80 focus-within:bg-surface/50">
           <textarea
@@ -159,7 +101,7 @@ export function CommandSurface({
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
-            className={`flex-1 resize-none bg-transparent py-3.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/40 ${chatMode === 'discovery' ? 'pl-12' : 'pl-4'} pr-2`}
+            className={`flex-1 resize-none bg-transparent py-3.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/40 pl-4 pr-2`}
             rows={1}
             disabled={isLoading || disabled}
           />

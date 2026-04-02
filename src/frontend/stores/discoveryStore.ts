@@ -28,6 +28,7 @@ import type {
 export interface SessionState {
     sessionId: string;
     sessionName: string;
+    projectId: string;
     createdAt: string;
     status: 'idle' | 'running' | 'complete';
     epochs: Map<string, Epoch>;
@@ -80,6 +81,9 @@ export interface DiscoveryStore {
 
     // Stage 4: set candidates from pipeline or Discovery chat
     setCandidatesForEpoch: (epochId: string, candidates: CandidateArtifact[]) => void;
+
+    // Sync a session that exists in the backend but not in local store (e.g. after restart)
+    upsertBackendSession: (sessionId: string, sessionName: string, createdAt: string, projectId?: string) => void;
 }
 
 export const useDiscoveryStore = create<DiscoveryStore>()(
@@ -184,6 +188,7 @@ export const useDiscoveryStore = create<DiscoveryStore>()(
                 const newSession: SessionState = {
                     sessionId: sid,
                     sessionName,
+                    projectId: params.projectId ?? '',
                     createdAt: new Date().toISOString(),
                     status: 'idle',
                     epochs: new Map([[rootEpochId, rootEpoch]]),
@@ -356,6 +361,26 @@ export const useDiscoveryStore = create<DiscoveryStore>()(
                     if (epoch) {
                         epoch.candidates = candidates;
                         epoch.currentStage = 4;
+                    }
+                });
+            },
+
+            upsertBackendSession: (sessionId, sessionName, createdAt, projectId) => {
+                set((draft) => {
+                    // Only add if not already present — never overwrite richer local state
+                    if (!draft.sessions[sessionId]) {
+                        draft.sessions[sessionId] = {
+                            sessionId,
+                            sessionName,
+                            projectId: projectId ?? '',
+                            createdAt,
+                            status: 'idle',
+                            epochs: new Map(),
+                            activeEpochId: null,
+                            rootEpochId: null,
+                            backgroundJobs: [],
+                            generatedFiles: [],
+                        };
                     }
                 });
             },

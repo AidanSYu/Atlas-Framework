@@ -35,7 +35,7 @@ export interface ToolInvocation {
 
 export interface Run {
   id: string;
-  mode: 'librarian' | 'cortex' | 'moe' | 'discovery' | 'coordinator';
+  mode: 'librarian' | 'cortex' | 'moe';
   intent: string;
   query: string;
   projectId: string;
