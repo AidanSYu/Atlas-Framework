@@ -15,7 +15,7 @@ import {
   Upload,
 } from 'lucide-react';
 
-import { api, type FileInfo } from '@/lib/api';
+import { api, type FileInfo, type TaskInfo, type TaskState } from '@/lib/api';
 import type { WorkspaceMode } from '@/lib/workspace-mode';
 import { useChatStore } from '@/stores/chatStore';
 
@@ -39,10 +39,17 @@ interface ProjectSidebarProps {
   onUploadClick: () => void;
   workspaceMode: WorkspaceMode;
   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
-  discoverySessions: DiscoverySessionListItem[];
-  activeExperimentSessionId: string | null;
-  onExperimentSelect: (sessionId: string) => void;
-  onNewExperiment: () => void;
+  // Legacy discovery-session props — kept for compatibility; unused now that Tasks
+  // use the new two-tier orchestration runtime.
+  discoverySessions?: DiscoverySessionListItem[];
+  activeExperimentSessionId?: string | null;
+  onExperimentSelect?: (sessionId: string) => void;
+  onNewExperiment?: () => void;
+  // Task runtime
+  tasks: TaskInfo[];
+  activeTaskId: string | null;
+  onTaskSelect: (taskId: string) => void;
+  onNewTask: () => void;
 }
 
 const MODE_META: Record<
@@ -91,14 +98,18 @@ export function ProjectSidebar({
   onUploadClick,
   workspaceMode,
   onWorkspaceModeChange,
-  discoverySessions,
-  activeExperimentSessionId,
-  onExperimentSelect,
-  onNewExperiment,
+  discoverySessions: _unusedDiscoverySessions,
+  activeExperimentSessionId: _unusedActiveExperimentSessionId,
+  onExperimentSelect: _unusedOnExperimentSelect,
+  onNewExperiment: _unusedOnNewExperiment,
+  tasks,
+  activeTaskId,
+  onTaskSelect,
+  onNewTask,
 }: ProjectSidebarProps) {
   const [filesOpen, setFilesOpen] = useState(true);
   const [sessionsOpen, setSessionsOpen] = useState(true);
-  const [experimentsOpen, setExperimentsOpen] = useState(true);
+  const [tasksOpen, setTasksOpen] = useState(true);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -110,7 +121,7 @@ export function ProjectSidebar({
       <ModeLead
         mode={workspaceMode}
         onNewSession={onNewSession}
-        onNewExperiment={onNewExperiment}
+        onNewExperiment={onNewTask}
       />
 
       {workspaceMode === 'chat' && (
@@ -172,11 +183,11 @@ export function ProjectSidebar({
         <>
           <SectionHeader
             label="Tasks"
-            open={experimentsOpen}
-            onToggle={() => setExperimentsOpen((open) => !open)}
+            open={tasksOpen}
+            onToggle={() => setTasksOpen((open) => !open)}
             action={
               <button
-                onClick={onNewExperiment}
+                onClick={onNewTask}
                 className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
                 title="New task"
               >
@@ -184,12 +195,12 @@ export function ProjectSidebar({
               </button>
             }
           />
-          {experimentsOpen && (
+          {tasksOpen && (
             <div className="min-h-0 flex-1 overflow-y-auto">
-              <DiscoverySessionList
-                sessions={discoverySessions}
-                activeSessionId={activeExperimentSessionId}
-                onSelect={onExperimentSelect}
+              <TaskList
+                tasks={tasks}
+                activeTaskId={activeTaskId}
+                onSelect={onTaskSelect}
               />
             </div>
           )}
@@ -322,7 +333,7 @@ function ModeLead({
 }: {
   mode: WorkspaceMode;
   onNewSession: () => void;
-  onNewExperiment: () => void;
+  onNewExperiment: () => void;  // now bound to onNewTask in the new task runtime
 }) {
   const meta = MODE_META[mode];
   const Icon = meta.icon;
@@ -358,8 +369,8 @@ function ModeLead({
             onClick={onNewExperiment}
             className="mt-3 inline-flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/15"
           >
-            <FlaskConical className="h-3 w-3" />
-            Start task
+            <Plus className="h-3 w-3" />
+            New task
           </button>
         )}
       </div>
@@ -670,6 +681,77 @@ function DiscoverySessionList({
       })}
     </div>
   );
+}
+
+function TaskList({
+  tasks,
+  activeTaskId,
+  onSelect,
+}: {
+  tasks: TaskInfo[];
+  activeTaskId: string | null;
+  onSelect: (taskId: string) => void;
+}) {
+  if (tasks.length === 0) {
+    return (
+      <div className="flex flex-col items-center px-3 py-6 text-center">
+        <FlaskConical className="mb-2 h-5 w-5 text-muted-foreground/20" />
+        <p className="text-xs text-muted-foreground">No tasks yet</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {tasks.map((task) => {
+        const isActive = activeTaskId === task.id;
+        const tone = taskStateTone(task.state);
+        const label = task.title || task.initial_prompt || 'Untitled task';
+        return (
+          <button
+            key={task.id}
+            type="button"
+            onClick={() => onSelect(task.id)}
+            className={[
+              'group flex w-full items-start gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-hover',
+              isActive ? 'border-l-2 border-emerald-400 bg-emerald-500/8 text-emerald-200' : 'text-muted-foreground',
+            ].join(' ')}
+          >
+            <div className="mt-1 flex items-center gap-1.5">
+              <span className={['h-1.5 w-1.5 rounded-full', tone.dot].join(' ')} />
+              <FlaskConical className="h-3.5 w-3.5 shrink-0" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-medium text-foreground">{label}</div>
+              <div className="mt-0.5 text-[10px] capitalize text-muted-foreground/75">
+                {tone.label} · {formatRelativeTime(task.updated_at || task.created_at)}
+              </div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function taskStateTone(state: TaskState): { label: string; dot: string } {
+  switch (state) {
+    case 'idle':
+      return { label: 'ready', dot: 'bg-muted-foreground/50' };
+    case 'initializing':
+    case 'planning':
+    case 'executing':
+    case 'reviewing':
+      return { label: state, dot: 'bg-warning' };
+    case 'suspended':
+      return { label: 'waiting', dot: 'bg-warning' };
+    case 'completed':
+      return { label: 'completed', dot: 'bg-success' };
+    case 'cancelled':
+      return { label: 'cancelled', dot: 'bg-muted-foreground/50' };
+    case 'failed':
+      return { label: 'failed', dot: 'bg-destructive' };
+  }
 }
 
 function formatRelativeTime(value: number | string): string {

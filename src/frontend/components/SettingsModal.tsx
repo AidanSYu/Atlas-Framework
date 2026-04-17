@@ -1,17 +1,20 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, CheckCircle2, AlertCircle, Loader2, Key } from 'lucide-react';
+import { Settings as SettingsIcon, CheckCircle2, AlertCircle, Loader2, Key, Moon, Sun } from 'lucide-react';
 import { api, ConfigKeysUpdate } from '@/lib/api';
+import type { AtlasTheme } from '@/hooks/useAtlasTheme';
 import { toastError, toastSuccess } from '@/stores/toastStore';
 
 interface SettingsModalProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
+    theme: AtlasTheme;
+    onThemeChange: (theme: AtlasTheme) => void;
     onKeysUpdated?: () => void;
 }
 
-export default function SettingsModal({ open, onOpenChange, onKeysUpdated }: SettingsModalProps) {
+export default function SettingsModal({ open, onOpenChange, theme, onThemeChange, onKeysUpdated }: SettingsModalProps) {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [status, setStatus] = useState({
@@ -133,66 +136,124 @@ export default function SettingsModal({ open, onOpenChange, onKeysUpdated }: Set
                         </div>
                         <div>
                             <h2 className="text-lg font-semibold tracking-tight text-foreground">Settings</h2>
-                            <p className="text-sm text-muted-foreground">Configure your AI providers</p>
+                            <p className="text-sm text-muted-foreground">Configure AI providers and workspace preferences</p>
                         </div>
                     </div>
 
-                    <div className="space-y-4">
-                        <ApiKeyInput
-                            label="OpenAI API Key"
-                            provider="openai"
-                            value={keys.openai}
-                            isConfigured={status.openai}
-                            isVerified={verified.openai}
-                            onChange={(v) => setKeys(prev => ({ ...prev, openai: v }))}
-                            placeholder="sk-..."
-                        />
-                        <ApiKeyInput
-                            label="Anthropic API Key"
-                            provider="anthropic"
-                            value={keys.anthropic}
-                            isConfigured={status.anthropic}
-                            isVerified={verified.anthropic}
-                            onChange={(v) => setKeys(prev => ({ ...prev, anthropic: v }))}
-                            placeholder="sk-ant-..."
-                        />
-                        <ApiKeyInput
-                            label="DeepSeek API Key"
-                            provider="deepseek"
-                            value={keys.deepseek}
-                            isConfigured={status.deepseek}
-                            isVerified={verified.deepseek}
-                            onChange={(v) => setKeys(prev => ({ ...prev, deepseek: v }))}
-                            placeholder="sk-..."
-                        />
-                        <ApiKeyInput
-                            label="MiniMax API Key"
-                            provider="minimax"
-                            value={keys.minimax}
-                            isConfigured={status.minimax}
-                            isVerified={verified.minimax}
-                            onChange={(v) => setKeys(prev => ({ ...prev, minimax: v }))}
-                            placeholder="..."
-                        />
+                    <div className="rounded-xl border border-border bg-background/60 p-4">
+                        <div className="mb-4 flex items-start justify-between gap-3">
+                            <div className="flex flex-col gap-1">
+                                <h3 className="text-sm font-medium text-foreground">API Providers</h3>
+                                <p className="text-xs leading-5 text-muted-foreground">
+                                    Add or rotate provider keys for Atlas integrations. Theme changes live in the footer toggle and apply immediately.
+                                </p>
+                            </div>
+                            {loading && (
+                                <div className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                    Checking
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="space-y-4">
+                            <ApiKeyInput
+                                label="OpenAI API Key"
+                                value={keys.openai}
+                                isConfigured={status.openai}
+                                isVerified={verified.openai}
+                                onChange={(v) => setKeys(prev => ({ ...prev, openai: v }))}
+                                placeholder="sk-..."
+                            />
+                            <ApiKeyInput
+                                label="Anthropic API Key"
+                                value={keys.anthropic}
+                                isConfigured={status.anthropic}
+                                isVerified={verified.anthropic}
+                                onChange={(v) => setKeys(prev => ({ ...prev, anthropic: v }))}
+                                placeholder="sk-ant-..."
+                            />
+                            <ApiKeyInput
+                                label="DeepSeek API Key"
+                                value={keys.deepseek}
+                                isConfigured={status.deepseek}
+                                isVerified={verified.deepseek}
+                                onChange={(v) => setKeys(prev => ({ ...prev, deepseek: v }))}
+                                placeholder="sk-..."
+                            />
+                            <ApiKeyInput
+                                label="MiniMax API Key"
+                                value={keys.minimax}
+                                isConfigured={status.minimax}
+                                isVerified={verified.minimax}
+                                onChange={(v) => setKeys(prev => ({ ...prev, minimax: v }))}
+                                placeholder="..."
+                            />
+                        </div>
                     </div>
 
-                    <div className="mt-8 flex justify-end gap-3">
-                        <button
-                            onClick={() => onOpenChange(false)}
-                            className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-surface hover:text-foreground transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            onClick={handleSave}
-                            disabled={saving}
-                            className="flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
-                        >
-                            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save Changes'}
-                        </button>
+                    <div className="mt-8 flex items-end justify-between gap-4">
+                        <FooterThemeToggle theme={theme} onThemeChange={onThemeChange} />
+
+                        <div className="flex items-center gap-3">
+                            <button
+                                onClick={() => onOpenChange(false)}
+                                className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-surface hover:text-foreground transition-colors"
+                            >
+                                Close
+                            </button>
+                            <button
+                                onClick={handleSave}
+                                disabled={saving}
+                                className="flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                            >
+                                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save Keys'}
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
+        </div>
+    );
+}
+
+function FooterThemeToggle({
+    theme,
+    onThemeChange,
+}: {
+    theme: AtlasTheme;
+    onThemeChange: (theme: AtlasTheme) => void;
+}) {
+    const isLight = theme === 'light';
+
+    return (
+        <div className="flex min-w-[112px] flex-col items-start gap-2">
+            <span className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
+                Theme
+            </span>
+            <button
+                type="button"
+                role="switch"
+                aria-checked={isLight}
+                aria-label={`Switch to ${isLight ? 'dark' : 'light'} mode`}
+                onClick={() => onThemeChange(isLight ? 'dark' : 'light')}
+                className="relative inline-flex h-8 w-[70px] items-center self-start rounded-full border border-border bg-background transition-colors hover:border-border-strong"
+            >
+                <span
+                    aria-hidden
+                    className={`pointer-events-none absolute left-[2px] top-[2px] h-[26px] w-[30px] rounded-full bg-accent shadow-sm transition-transform duration-200 ${
+                        isLight ? 'translate-x-[34px]' : 'translate-x-0'
+                    }`}
+                />
+                <span className="relative z-10 grid w-full grid-cols-2 place-items-center">
+                    <Moon className={`h-3.5 w-3.5 transition-colors ${
+                        isLight ? 'text-muted-foreground' : 'text-accent-foreground'
+                    }`} />
+                    <Sun className={`h-3.5 w-3.5 transition-colors ${
+                        isLight ? 'text-accent-foreground' : 'text-muted-foreground'
+                    }`} />
+                </span>
+            </button>
         </div>
     );
 }
@@ -206,7 +267,6 @@ function ApiKeyInput({
     placeholder
 }: {
     label: string;
-    provider: string;
     value: string;
     isConfigured: boolean;
     isVerified: boolean;

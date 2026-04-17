@@ -222,6 +222,71 @@ class DiscoverySession(Base):
 
 
 # ============================================================
+# TASK ORCHESTRATION (Atlas domain-agnostic task runtime)
+# ============================================================
+
+class Task(Base):
+    """A single task executed by the two-tier orchestration loop.
+
+    Scoped to a project/workspace. Tasks can nest (parent_task_id) to support
+    delegated subtasks. The FSM state is persisted here; the full event log
+    lives in TaskEvent. "discovery" is the chemistry-flavored legacy name;
+    "task" is the generalized Atlas surface.
+    """
+    __tablename__ = "tasks"
+
+    id = Column(String, primary_key=True, default=_generate_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False, index=True)
+    parent_task_id = Column(String, ForeignKey("tasks.id"), nullable=True, index=True)
+
+    # Short human label + originating prompt (for the task list UI)
+    title = Column(String, nullable=True)
+    initial_prompt = Column(Text, nullable=True)
+
+    # FSM state
+    state = Column(String, nullable=False, default="idle")
+    terminal_outcome = Column(String, nullable=True)  # completed | cancelled | failed
+
+    # Monotonic counter for event sequence numbers, per-task
+    next_sequence = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_tasks_project_id", "project_id"),
+        Index("idx_tasks_parent", "parent_task_id"),
+        Index("idx_tasks_state", "state"),
+    )
+
+
+class TaskEvent(Base):
+    """Append-only event log for the task orchestration runtime.
+
+    The single source of truth. Never updated after insert. Views
+    (Nemotron-visible, UI trace, audit) are computed from this log.
+    """
+    __tablename__ = "task_events"
+
+    id = Column(String, primary_key=True, default=_generate_uuid)
+    task_id = Column(String, ForeignKey("tasks.id"), nullable=False, index=True)
+    sequence = Column(Integer, nullable=False)  # monotonic within a task
+    schema_version = Column(Integer, nullable=False, default=1)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    actor = Column(String, nullable=False, index=True)  # USER | DEEPSEEK | NEMOTRON | TOOL_WRAPPER | SYSTEM_*
+    event_type = Column(String, nullable=False, index=True)
+    causal_parents = Column(JSON, nullable=False, default=list)
+    payload = Column(JSON, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("idx_task_events_task_seq", "task_id", "sequence", unique=True),
+        Index("idx_task_events_type", "event_type"),
+        Index("idx_task_events_actor", "actor"),
+    )
+
+
+# ============================================================
 # DATABASE SETUP (SQLite embedded)
 # ============================================================
 

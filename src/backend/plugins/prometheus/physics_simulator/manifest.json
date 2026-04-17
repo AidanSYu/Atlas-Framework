@@ -58,7 +58,11 @@
       },
       "training_data": {
         "type": "object",
-        "description": "Training pairs: {inputs: array, outputs: array}."
+        "description": "Training pairs in-memory: {inputs: array, outputs: array}. Mutually exclusive with training_data_path."
+      },
+      "training_data_path": {
+        "type": "string",
+        "description": "Absolute path to a .npz file containing required keys 'inputs' and 'outputs' (e.g. 2D Darcy flow fixtures from test_docs/physics/darcy_small.npz). Use this instead of training_data when the data is large enough that inlining into JSON is impractical. Fails loudly on missing file or missing keys; no silent fallback to synthetic data."
       },
       "n_mc_samples": {
         "type": "integer",

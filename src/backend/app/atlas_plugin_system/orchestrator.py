@@ -28,14 +28,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GPU_LAYERS = 35
 
-# Check if litellm is available for API fallback
-_litellm_available = False
-try:
-    import litellm  # noqa: F401
-    _litellm_available = True
-except ImportError:
-    pass
-
 # ---------------------------------------------------------------------------
 # Output parsing — the model emits <think>, <tool_call>, and free text
 # ---------------------------------------------------------------------------
@@ -83,8 +75,6 @@ class AtlasOrchestratorService:
         self._load_lock = asyncio.Lock()
         self._inference_lock = threading.Lock()
         self._gpu_layers = _resolve_gpu_layers()
-        self._use_api: bool = False
-        self._api_model: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -97,10 +87,10 @@ class AtlasOrchestratorService:
     # Model loading
     # ------------------------------------------------------------------
     async def ensure_model_loaded(self) -> None:
-        if self._llama is not None or self._use_api:
+        if self._llama is not None:
             return
         async with self._load_lock:
-            if self._llama is not None or self._use_api:
+            if self._llama is not None:
                 return
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._load_model_sync)
@@ -113,76 +103,68 @@ class AtlasOrchestratorService:
         matches = sorted(Path(settings.MODELS_DIR).glob("*Orchestrator*.gguf"))
         if matches:
             logger.warning(
-                "Configured orchestrator model '%s' not found; falling back to %s",
+                "Configured orchestrator model '%s' not found; using %s",
                 settings.ATLAS_ORCHESTRATOR_MODEL,
                 matches[0].name,
             )
             return matches[0]
 
-        # Also try any GGUF file at all
-        any_gguf = sorted(Path(settings.MODELS_DIR).glob("*.gguf"))
-        if any_gguf:
-            logger.warning("No orchestrator model found; using %s", any_gguf[0].name)
-            return any_gguf[0]
-
-        return None
-
-    def _resolve_api_model(self) -> Optional[str]:
-        """Find a configured API model to use as fallback."""
-        if not _litellm_available:
-            return None
-        # Priority: DeepSeek (cheap, good at tool use) > OpenAI > Anthropic > MiniMax
-        candidates = [
-            ("deepseek", "deepseek/deepseek-chat", getattr(settings, "DEEPSEEK_API_KEY", "")),
-            ("openai", "openai/gpt-4o-mini", getattr(settings, "OPENAI_API_KEY", "")),
-            ("anthropic", "anthropic/claude-sonnet-4-20250514", getattr(settings, "ANTHROPIC_API_KEY", "")),
-            ("minimax", "minimax/MiniMax-Text-01", getattr(settings, "MINIMAX_API_KEY", "")),
-        ]
-        for provider, model_id, key in candidates:
-            if key:
-                logger.info("API fallback available: %s (%s)", model_id, provider)
-                return model_id
         return None
 
     def _load_model_sync(self) -> None:
+        """Load the local Nemotron GGUF. Raise an actionable error on failure.
+
+        Doctrine: no silent fallback to a different model. Nemotron is trained
+        on a specific <tool_call>{...}</tool_call> JSON format; a cloud chat
+        model emits a different format and produces infinite supervisor revise
+        loops that look like orchestration bugs. Fail loud, point the user at
+        the fix.
+        """
+        try:
+            from llama_cpp import Llama
+        except ImportError as exc:
+            raise RuntimeError(
+                "llama-cpp-python is not installed. The Atlas orchestrator requires "
+                "it to load the Nemotron-Orchestrator GGUF locally. Install with:\n"
+                "    pip install llama-cpp-python\n"
+                "No API fallback is used — Nemotron's tool-call format is model-specific."
+            ) from exc
+
         model_path = self._resolve_model_path()
-
-        if model_path is not None:
-            try:
-                from app.services.llm import _add_cuda_dll_directories
-                _add_cuda_dll_directories()
-                from llama_cpp import Llama
-
-                logger.info("Loading Atlas orchestrator from %s (gpu_layers=%s)", model_path, self._gpu_layers)
-                self._llama = Llama(
-                    model_path=str(model_path),
-                    n_ctx=settings.ATLAS_ORCHESTRATOR_CONTEXT_SIZE,
-                    n_gpu_layers=self._gpu_layers,
-                    n_batch=settings.LLM_N_BATCH,
-                    use_mlock=settings.LLM_USE_MLOCK,
-                    check_tensors=False,
-                    cache=True,
-                    verbose=settings.LLM_VERBOSE,
-                    n_threads=4,
-                )
-                self._model_name = model_path.name
-                return
-            except Exception as exc:
-                logger.warning("Failed to load local orchestrator model: %s", exc)
-
-        # Fallback to API model
-        api_model = self._resolve_api_model()
-        if api_model:
-            logger.info("Using API model for orchestration: %s", api_model)
-            self._use_api = True
-            self._api_model = api_model
-            self._model_name = api_model
-        else:
+        if model_path is None:
             raise FileNotFoundError(
-                f"No orchestrator model available. Either place "
-                f"'{settings.ATLAS_ORCHESTRATOR_MODEL}' in {settings.MODELS_DIR}, "
-                f"or configure an API key (DEEPSEEK_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY)."
+                f"Nemotron GGUF not found. Expected "
+                f"'{settings.ATLAS_ORCHESTRATOR_MODEL}' (or any '*Orchestrator*.gguf') "
+                f"in MODELS_DIR={settings.MODELS_DIR}. "
+                f"Download nvidia_Orchestrator-8B-IQ2_M.gguf from HuggingFace and drop "
+                f"it in that directory. No API fallback — Nemotron's tool-call format "
+                f"is model-specific and a swap produces broken orchestration."
             )
+
+        try:
+            from app.services.llm import _add_cuda_dll_directories
+            _add_cuda_dll_directories()
+
+            logger.info("Loading Atlas orchestrator from %s (gpu_layers=%s)", model_path, self._gpu_layers)
+            self._llama = Llama(
+                model_path=str(model_path),
+                n_ctx=settings.ATLAS_ORCHESTRATOR_CONTEXT_SIZE,
+                n_gpu_layers=self._gpu_layers,
+                n_batch=settings.LLM_N_BATCH,
+                use_mlock=settings.LLM_USE_MLOCK,
+                check_tensors=False,
+                cache=True,
+                verbose=settings.LLM_VERBOSE,
+                n_threads=4,
+            )
+            self._model_name = model_path.name
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load Nemotron GGUF at {model_path}: {exc}. "
+                f"Check that the file is not corrupted and that your GPU has "
+                f"enough VRAM (or lower ATLAS_ORCHESTRATOR_GPU_LAYERS). "
+                f"No API fallback — see doctrine."
+            ) from exc
 
     # ------------------------------------------------------------------
     # Main orchestration entry point
@@ -317,13 +299,10 @@ class AtlasOrchestratorService:
         )
 
     # ------------------------------------------------------------------
-    # Generation — local (ChatML) or API (LiteLLM)
+    # Generation — local Nemotron only (no API fallback; see doctrine)
     # ------------------------------------------------------------------
     async def _generate(self, messages: List[Dict[str, str]]) -> str:
-        """Generate a completion from either the local model or an API model."""
-        if self._use_api:
-            return await self._generate_via_api(messages)
-
+        """Generate a completion from the local Nemotron GGUF."""
         prompt_text = self._render_chatml(messages)
         loop = asyncio.get_running_loop()
 
@@ -339,22 +318,6 @@ class AtlasOrchestratorService:
                 return (response["choices"][0]["text"] or "").strip()
 
         return await loop.run_in_executor(None, _do_generate)
-
-    async def _generate_via_api(self, messages: List[Dict[str, str]]) -> str:
-        """Generate via a cloud API model using LiteLLM."""
-        import litellm
-
-        try:
-            response = await litellm.acompletion(
-                model=self._api_model,
-                messages=messages,
-                temperature=settings.ATLAS_ORCHESTRATOR_TEMPERATURE,
-                max_tokens=settings.ATLAS_ORCHESTRATOR_MAX_TOKENS,
-            )
-            return (response.choices[0].message.content or "").strip()
-        except Exception as exc:
-            logger.error("API orchestrator generation failed: %s", exc)
-            raise RuntimeError(f"API orchestrator generation failed: {exc}") from exc
 
     async def _force_final_answer(self, messages: List[Dict[str, str]]) -> str:
         """When the safety bound is reached, ask the model to synthesize."""

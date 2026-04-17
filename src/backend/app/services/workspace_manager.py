@@ -70,6 +70,17 @@ class WorkspaceManager:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def task_attachments_path(self, workspace_id: str, task_id: str) -> Path:
+        """Dir where task-scoped attachments (non-ingested) live.
+
+        Attachments are user-uploaded files passed to the tool loop (NMR
+        spectra, inspection images, CSVs) that should NOT be embedded into
+        the RAG corpus. Keep them separate from `files/` which feeds ingest.
+        """
+        path = self.workspace_path(workspace_id) / "task_attachments" / task_id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def create_folder(self, workspace_id: str, name: str, description: Optional[str] = None) -> Path:
         ws_path = self.workspace_path(workspace_id)
         (ws_path / FILES_SUBDIR).mkdir(parents=True, exist_ok=True)

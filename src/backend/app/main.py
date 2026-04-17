@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.config_routes import router as config_router
 from app.api.data_routes import router as data_router
+from app.api.task_routes import router as task_router
 from app.atlas_plugin_system import get_tool_catalog
 from app.api.framework_routes import router as framework_router
 from app.core.config import settings
@@ -68,6 +69,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(config_router)
 app.include_router(framework_router)
 app.include_router(data_router)
+app.include_router(task_router)
 logger.info("Routes included")
 
 

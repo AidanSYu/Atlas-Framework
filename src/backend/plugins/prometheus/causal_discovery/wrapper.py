@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -168,6 +169,52 @@ def _rank_interventions(equation_str: str, feature_names: List[str], X: np.ndarr
     return ranking
 
 
+def _load_table_from_csv(data_path: str) -> Tuple[List[List[float]], List[str]]:
+    """Load a tabular CSV into (2D float list, variable_names). Fails loud.
+
+    The CSV must have a header row and contain only numeric columns; NaNs are
+    rejected because PCMCI+ cannot consume them.
+    """
+    if not isinstance(data_path, str) or not data_path.strip():
+        raise RuntimeError("data_path must be a non-empty string.")
+    if not os.path.isfile(data_path):
+        raise RuntimeError(
+            f"data_path does not point to an existing file: {data_path!r}."
+        )
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise RuntimeError(
+            "Loading 'data_path' requires pandas (pip install pandas)."
+        ) from exc
+    try:
+        df = pd.read_csv(data_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to parse CSV at {data_path!r}: {exc}"
+        ) from exc
+    if df.shape[1] < 2:
+        raise RuntimeError(
+            f"CSV at {data_path!r} needs >= 2 columns for causal discovery, "
+            f"got {df.shape[1]}."
+        )
+    non_numeric = [c for c in df.columns if not np.issubdtype(df[c].dtype, np.number)]
+    if non_numeric:
+        raise RuntimeError(
+            f"Non-numeric columns in {data_path!r}: {non_numeric}. "
+            "Drop or numerically encode them before passing to causal_discovery."
+        )
+    if df.isna().any().any():
+        bad = df.columns[df.isna().any()].tolist()
+        raise RuntimeError(
+            f"CSV at {data_path!r} contains NaN values in columns: {bad}. "
+            "Clean the data before passing it to causal_discovery."
+        )
+    variable_names = [str(c) for c in df.columns]
+    data = df.astype(float).values.tolist()
+    return data, variable_names
+
+
 def _generate_demo_data(T: int = 500, seed: int = 42):
     rng = np.random.default_rng(seed)
     names = ["oven_temperature", "belt_speed", "paste_thickness", "defect_rate"]
@@ -212,9 +259,25 @@ class CausalDiscoveryWrapper:
         data = args.get("data")
         variable_names = args.get("variable_names")
         target_variable = args.get("target_variable")
+        target_column = args.get("target_column")
+        data_path = args.get("data_path")
         max_lag = int(args.get("max_lag", 5))
+
+        if data is None and data_path:
+            # File-loading path: loud failure on missing file / bad columns.
+            data, variable_names = _load_table_from_csv(data_path)
+
         if data is None or variable_names is None:
-            return {"valid": False, "error": "Both 'data' and 'variable_names' are required."}
+            return {
+                "valid": False,
+                "error": (
+                    "Provide either ('data' + 'variable_names') or 'data_path' "
+                    "pointing at a header-rowed numeric CSV."
+                ),
+            }
+
+        if target_variable is None and target_column is not None:
+            target_variable = target_column
 
         if target_variable is None:
             target_variable = variable_names[-1]

@@ -1,0 +1,405 @@
+{
+  "description": "Realistic SMT manufacturing lineage fixture for the Atlas traceability_compliance plugin. W3C PROV-DM compatible. Root entity: board-SN48291 (a single PCBA serial number) tracing backward through SMT assembly (paste deposition, placement, reflow, AOI, ICT, functional test, final QA, shipment) and forward through its constituent lots (solder paste, resistor/capacitor/IC components, bare PCB, stencil). All agents (operators, equipment) carry credentials or calibration metadata valid within the 365-day window (today is 2026-04-18). All activities have start/end timestamps and at least one associated, credentialed agent — producing a gap-free PROV bundle.",
+  "nodes": [
+    {
+      "id": "board-SN48291",
+      "type": "board",
+      "metadata": {
+        "serial_number": "SN48291",
+        "part_number": "PCBA-ATLAS-REV-D",
+        "work_order": "WO-2026-04-1145",
+        "manufactured_on": "2026-04-15",
+        "revision": "D",
+        "customer": "internal-dogfood"
+      }
+    },
+    {
+      "id": "pcb-bare-lot-PCB2604A",
+      "type": "lot",
+      "metadata": {
+        "supplier": "Sierra Circuits",
+        "coo": "US",
+        "layer_count": 8,
+        "finish": "ENIG",
+        "received": "2026-04-10",
+        "coc_id": "CoC-PCB-2604A-0417"
+      }
+    },
+    {
+      "id": "solder-paste-lot-KE-SAC305-26079",
+      "type": "material",
+      "metadata": {
+        "supplier": "Kester",
+        "alloy": "SAC305",
+        "flux_type": "NP545-NL",
+        "particle_type": "T4",
+        "mfg_date": "2026-03-21",
+        "expiry": "2026-09-21",
+        "coc_id": "CoC-KE-26079"
+      }
+    },
+    {
+      "id": "stencil-STN-A472-v3",
+      "type": "material",
+      "metadata": {
+        "vendor": "Photo Stencil",
+        "foil_thickness_um": 120,
+        "aperture_reduction_pct": 10,
+        "revision": "v3",
+        "laser_cut_on": "2026-02-02"
+      }
+    },
+    {
+      "id": "component-lot-R0402-10K-YAG45881",
+      "type": "component",
+      "metadata": {
+        "manufacturer": "Yageo",
+        "mpn": "RC0402FR-0710KL",
+        "value": "10k 1%",
+        "package": "0402",
+        "reel_id": "YAG-45881",
+        "qty_per_reel": 10000,
+        "moisture_level": "MSL1"
+      }
+    },
+    {
+      "id": "component-lot-C0603-100nF-MUR88213",
+      "type": "component",
+      "metadata": {
+        "manufacturer": "Murata",
+        "mpn": "GRM188R71C104KA01D",
+        "value": "100nF X7R 16V",
+        "package": "0603",
+        "reel_id": "MUR-88213",
+        "qty_per_reel": 4000,
+        "moisture_level": "MSL1"
+      }
+    },
+    {
+      "id": "component-lot-IC-STM32H7-ST72041",
+      "type": "component",
+      "metadata": {
+        "manufacturer": "STMicroelectronics",
+        "mpn": "STM32H743VIT6",
+        "package": "LQFP-100",
+        "tray_id": "ST-72041",
+        "moisture_level": "MSL3",
+        "date_code": "2610",
+        "bake_out_verified": true
+      }
+    },
+    {
+      "id": "component-lot-IC-PMIC-TI40117",
+      "type": "component",
+      "metadata": {
+        "manufacturer": "Texas Instruments",
+        "mpn": "TPS65086100RSKR",
+        "package": "VQFN-64",
+        "reel_id": "TI-40117",
+        "moisture_level": "MSL3",
+        "date_code": "2609"
+      }
+    },
+    {
+      "id": "operator-emma-chen",
+      "type": "operator",
+      "metadata": {
+        "employee_id": "E-10442",
+        "name": "Emma Chen",
+        "cert": "IPC-A-610H-CIT",
+        "cert_expires": "2027-02-15",
+        "shift": "A",
+        "signed_by": "emma.chen@atlas-mfg.local"
+      }
+    },
+    {
+      "id": "operator-marcus-okafor",
+      "type": "operator",
+      "metadata": {
+        "employee_id": "E-10501",
+        "name": "Marcus Okafor",
+        "cert": "IPC-7711-CIS",
+        "cert_expires": "2026-11-30",
+        "shift": "A",
+        "signed_by": "marcus.okafor@atlas-mfg.local"
+      }
+    },
+    {
+      "id": "operator-priya-nair",
+      "type": "operator",
+      "metadata": {
+        "employee_id": "E-10633",
+        "name": "Priya Nair",
+        "cert": "J-STD-001H-CIT",
+        "cert_expires": "2027-06-01",
+        "shift": "A",
+        "signed_by": "priya.nair@atlas-mfg.local"
+      }
+    },
+    {
+      "id": "qa-inspector-daniel-rosen",
+      "type": "operator",
+      "metadata": {
+        "employee_id": "Q-20014",
+        "name": "Daniel Rosen",
+        "cert": "IPC-A-610H-CIT, IPC-QA-LEAD",
+        "cert_expires": "2027-04-20",
+        "role": "quality-auditor",
+        "signed_by": "daniel.rosen@atlas-mfg.local"
+      }
+    },
+    {
+      "id": "printer-dek-horizon-iX",
+      "type": "equipment",
+      "metadata": {
+        "model": "ASM DEK Horizon iX",
+        "asset_tag": "PRNT-07",
+        "cal_date": "2026-01-14",
+        "cal_due": "2026-07-14",
+        "cert": "ISO-17025-cal-2026-0041"
+      }
+    },
+    {
+      "id": "placer-fuji-nxtiii",
+      "type": "equipment",
+      "metadata": {
+        "model": "Fuji NXT-III M6",
+        "asset_tag": "PLCR-03",
+        "cal_date": "2026-02-02",
+        "cal_due": "2026-08-02",
+        "cert": "ISO-17025-cal-2026-0088"
+      }
+    },
+    {
+      "id": "oven-heller-1913-zone8",
+      "type": "oven",
+      "metadata": {
+        "model": "Heller 1913 MK5",
+        "asset_tag": "RFLW-02",
+        "zones": 8,
+        "cal_date": "2026-03-05",
+        "cal_due": "2026-09-05",
+        "cert": "ISO-17025-cal-2026-0117",
+        "last_profile_verification": "2026-04-14"
+      }
+    },
+    {
+      "id": "aoi-station-kohyoung-zenith",
+      "type": "equipment",
+      "metadata": {
+        "model": "Koh Young Zenith 2",
+        "asset_tag": "AOI-04",
+        "cal_date": "2026-03-28",
+        "cal_due": "2026-09-28",
+        "cert": "ISO-17025-cal-2026-0152"
+      }
+    },
+    {
+      "id": "ict-fixture-teradyne-TS900",
+      "type": "equipment",
+      "metadata": {
+        "model": "Teradyne TS-900",
+        "asset_tag": "ICT-01",
+        "fixture_id": "ICT-F12-ATLAS-REV-D",
+        "cal_date": "2026-02-20",
+        "cal_due": "2026-08-20",
+        "cert": "ISO-17025-cal-2026-0101"
+      }
+    },
+    {
+      "id": "fct-tester-keysight-PXIe",
+      "type": "equipment",
+      "metadata": {
+        "model": "Keysight PXIe M9019A",
+        "asset_tag": "FCT-02",
+        "cal_date": "2026-03-11",
+        "cal_due": "2026-09-11",
+        "cert": "ISO-17025-cal-2026-0129"
+      }
+    },
+    {
+      "id": "smt-line-3",
+      "type": "line",
+      "metadata": {
+        "facility": "Plant-A",
+        "line_id": "SMT-L3",
+        "cell_supervisor": "Lena Park",
+        "signed_by": "lena.park@atlas-mfg.local"
+      }
+    },
+    {
+      "id": "incoming-inspection",
+      "type": "inspection",
+      "metadata": {
+        "start": "2026-04-10T07:15:00Z",
+        "end": "2026-04-10T09:40:00Z",
+        "procedure": "QA-INC-002",
+        "lots_inspected": 8,
+        "result": "PASS"
+      }
+    },
+    {
+      "id": "kitting-WO-1145",
+      "type": "assembly",
+      "metadata": {
+        "start": "2026-04-14T14:00:00Z",
+        "end": "2026-04-14T15:20:00Z",
+        "procedure": "KIT-SOP-017",
+        "work_order": "WO-2026-04-1145",
+        "kit_id": "KIT-1145-A"
+      }
+    },
+    {
+      "id": "paste-deposition",
+      "type": "process",
+      "metadata": {
+        "start": "2026-04-15T08:30:00Z",
+        "end": "2026-04-15T08:32:15Z",
+        "recipe_id": "PRNT-RCP-ATLAS-D-v2",
+        "squeegee_speed_mm_s": 35,
+        "squeegee_pressure_kg": 6.5,
+        "separation_speed_mm_s": 3.0,
+        "spi_post_check": "PASS"
+      }
+    },
+    {
+      "id": "component-placement",
+      "type": "assembly",
+      "metadata": {
+        "start": "2026-04-15T08:34:00Z",
+        "end": "2026-04-15T08:48:30Z",
+        "recipe_id": "PLCR-RCP-ATLAS-D-v5",
+        "components_placed": 412,
+        "cph_actual": 1740,
+        "pickup_failures": 2
+      }
+    },
+    {
+      "id": "reflow-soldering",
+      "type": "reflow",
+      "metadata": {
+        "start": "2026-04-15T08:50:00Z",
+        "end": "2026-04-15T08:54:40Z",
+        "recipe_id": "reflow-recipe-SAC305-v4",
+        "peak_temp_c": 244.5,
+        "tal_seconds": 62,
+        "soak_60_150_seconds": 98,
+        "ramp_rate_c_per_s": 1.4,
+        "conveyor_speed_mm_min": 900,
+        "atmosphere": "N2",
+        "o2_ppm": 850
+      }
+    },
+    {
+      "id": "aoi-inspection",
+      "type": "inspection",
+      "metadata": {
+        "start": "2026-04-15T08:56:00Z",
+        "end": "2026-04-15T08:57:10Z",
+        "recipe_id": "AOI-ATLAS-D-v7",
+        "defects_found": 0,
+        "result": "PASS",
+        "coverage_pct": 100
+      }
+    },
+    {
+      "id": "ict-test-SN48291",
+      "type": "test",
+      "metadata": {
+        "start": "2026-04-15T09:10:00Z",
+        "end": "2026-04-15T09:12:45Z",
+        "program": "ICT-ATLAS-D-v3",
+        "nets_tested": 284,
+        "shorts": 0,
+        "opens": 0,
+        "result": "PASS"
+      }
+    },
+    {
+      "id": "fct-test-SN48291",
+      "type": "test",
+      "metadata": {
+        "start": "2026-04-15T09:25:00Z",
+        "end": "2026-04-15T09:33:20Z",
+        "program": "FCT-ATLAS-D-v2",
+        "tests_executed": 47,
+        "tests_passed": 47,
+        "result": "PASS",
+        "firmware_flashed": "atlas-bootloader-1.4.2"
+      }
+    },
+    {
+      "id": "final-qa-audit",
+      "type": "inspection",
+      "metadata": {
+        "start": "2026-04-15T10:05:00Z",
+        "end": "2026-04-15T10:11:00Z",
+        "procedure": "QA-FINAL-006",
+        "sampling": "100%",
+        "visual_ipc_class": 2,
+        "result": "PASS"
+      }
+    }
+  ],
+  "edges": [
+    {"id": "e-01", "source": "incoming-inspection", "target": "qa-inspector-daniel-rosen", "relation": "wasAssociatedWith"},
+    {"id": "e-02", "source": "pcb-bare-lot-PCB2604A", "target": "incoming-inspection", "relation": "wasGeneratedBy"},
+    {"id": "e-03", "source": "solder-paste-lot-KE-SAC305-26079", "target": "incoming-inspection", "relation": "wasGeneratedBy"},
+    {"id": "e-04", "source": "component-lot-R0402-10K-YAG45881", "target": "incoming-inspection", "relation": "wasGeneratedBy"},
+    {"id": "e-05", "source": "component-lot-C0603-100nF-MUR88213", "target": "incoming-inspection", "relation": "wasGeneratedBy"},
+    {"id": "e-06", "source": "component-lot-IC-STM32H7-ST72041", "target": "incoming-inspection", "relation": "wasGeneratedBy"},
+    {"id": "e-07", "source": "component-lot-IC-PMIC-TI40117", "target": "incoming-inspection", "relation": "wasGeneratedBy"},
+    {"id": "e-08", "source": "stencil-STN-A472-v3", "target": "incoming-inspection", "relation": "wasGeneratedBy"},
+
+    {"id": "e-09", "source": "kitting-WO-1145", "target": "operator-emma-chen", "relation": "wasAssociatedWith"},
+    {"id": "e-10", "source": "kitting-WO-1145", "target": "smt-line-3", "relation": "wasAssociatedWith"},
+    {"id": "e-11", "source": "kitting-WO-1145", "target": "pcb-bare-lot-PCB2604A", "relation": "used"},
+    {"id": "e-12", "source": "kitting-WO-1145", "target": "component-lot-R0402-10K-YAG45881", "relation": "used"},
+    {"id": "e-13", "source": "kitting-WO-1145", "target": "component-lot-C0603-100nF-MUR88213", "relation": "used"},
+    {"id": "e-14", "source": "kitting-WO-1145", "target": "component-lot-IC-STM32H7-ST72041", "relation": "used"},
+    {"id": "e-15", "source": "kitting-WO-1145", "target": "component-lot-IC-PMIC-TI40117", "relation": "used"},
+
+    {"id": "e-16", "source": "paste-deposition", "target": "operator-emma-chen", "relation": "wasAssociatedWith"},
+    {"id": "e-17", "source": "paste-deposition", "target": "printer-dek-horizon-iX", "relation": "wasAssociatedWith"},
+    {"id": "e-18", "source": "paste-deposition", "target": "smt-line-3", "relation": "wasAssociatedWith"},
+    {"id": "e-19", "source": "paste-deposition", "target": "solder-paste-lot-KE-SAC305-26079", "relation": "used"},
+    {"id": "e-20", "source": "paste-deposition", "target": "stencil-STN-A472-v3", "relation": "used"},
+    {"id": "e-21", "source": "paste-deposition", "target": "pcb-bare-lot-PCB2604A", "relation": "used"},
+
+    {"id": "e-22", "source": "component-placement", "target": "operator-marcus-okafor", "relation": "wasAssociatedWith"},
+    {"id": "e-23", "source": "component-placement", "target": "placer-fuji-nxtiii", "relation": "wasAssociatedWith"},
+    {"id": "e-24", "source": "component-placement", "target": "smt-line-3", "relation": "wasAssociatedWith"},
+    {"id": "e-25", "source": "component-placement", "target": "component-lot-R0402-10K-YAG45881", "relation": "used"},
+    {"id": "e-26", "source": "component-placement", "target": "component-lot-C0603-100nF-MUR88213", "relation": "used"},
+    {"id": "e-27", "source": "component-placement", "target": "component-lot-IC-STM32H7-ST72041", "relation": "used"},
+    {"id": "e-28", "source": "component-placement", "target": "component-lot-IC-PMIC-TI40117", "relation": "used"},
+
+    {"id": "e-29", "source": "reflow-soldering", "target": "operator-marcus-okafor", "relation": "wasAssociatedWith"},
+    {"id": "e-30", "source": "reflow-soldering", "target": "oven-heller-1913-zone8", "relation": "wasAssociatedWith"},
+    {"id": "e-31", "source": "reflow-soldering", "target": "smt-line-3", "relation": "wasAssociatedWith"},
+
+    {"id": "e-32", "source": "board-SN48291", "target": "reflow-soldering", "relation": "wasGeneratedBy"},
+    {"id": "e-33", "source": "board-SN48291", "target": "pcb-bare-lot-PCB2604A", "relation": "wasDerivedFrom"},
+    {"id": "e-34", "source": "board-SN48291", "target": "solder-paste-lot-KE-SAC305-26079", "relation": "wasDerivedFrom"},
+    {"id": "e-35", "source": "board-SN48291", "target": "component-lot-R0402-10K-YAG45881", "relation": "wasDerivedFrom"},
+    {"id": "e-36", "source": "board-SN48291", "target": "component-lot-C0603-100nF-MUR88213", "relation": "wasDerivedFrom"},
+    {"id": "e-37", "source": "board-SN48291", "target": "component-lot-IC-STM32H7-ST72041", "relation": "wasDerivedFrom"},
+    {"id": "e-38", "source": "board-SN48291", "target": "component-lot-IC-PMIC-TI40117", "relation": "wasDerivedFrom"},
+    {"id": "e-39", "source": "board-SN48291", "target": "operator-marcus-okafor", "relation": "wasAttributedTo"},
+
+    {"id": "e-40", "source": "aoi-inspection", "target": "operator-priya-nair", "relation": "wasAssociatedWith"},
+    {"id": "e-41", "source": "aoi-inspection", "target": "aoi-station-kohyoung-zenith", "relation": "wasAssociatedWith"},
+    {"id": "e-42", "source": "aoi-inspection", "target": "board-SN48291", "relation": "used"},
+
+    {"id": "e-43", "source": "ict-test-SN48291", "target": "operator-priya-nair", "relation": "wasAssociatedWith"},
+    {"id": "e-44", "source": "ict-test-SN48291", "target": "ict-fixture-teradyne-TS900", "relation": "wasAssociatedWith"},
+    {"id": "e-45", "source": "ict-test-SN48291", "target": "board-SN48291", "relation": "used"},
+
+    {"id": "e-46", "source": "fct-test-SN48291", "target": "operator-priya-nair", "relation": "wasAssociatedWith"},
+    {"id": "e-47", "source": "fct-test-SN48291", "target": "fct-tester-keysight-PXIe", "relation": "wasAssociatedWith"},
+    {"id": "e-48", "source": "fct-test-SN48291", "target": "board-SN48291", "relation": "used"},
+
+    {"id": "e-49", "source": "final-qa-audit", "target": "qa-inspector-daniel-rosen", "relation": "wasAssociatedWith"},
+    {"id": "e-50", "source": "final-qa-audit", "target": "board-SN48291", "relation": "used"}
+  ]
+}

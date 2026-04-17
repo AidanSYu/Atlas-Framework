@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Inter, Sora, IBM_Plex_Mono } from 'next/font/google'
 import './globals.css'
 import ToastContainer from '@/components/ToastContainer'
+import { ThemeInitializerScript } from '@/components/ThemeInitializerScript'
 
 const inter = Inter({
   subsets: ['latin'],
@@ -34,8 +35,9 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className={`dark ${inter.variable} ${sora.variable} ${ibmPlexMono.variable}`} suppressHydrationWarning>
-      <body className={`${inter.className} dark bg-background text-foreground antialiased`} suppressHydrationWarning>
+    <html lang="en" className={`${inter.variable} ${sora.variable} ${ibmPlexMono.variable}`} suppressHydrationWarning>
+      <body className={`${inter.className} bg-background text-foreground antialiased`} suppressHydrationWarning>
+        <ThemeInitializerScript />
         {children}
         <ToastContainer />
       </body>

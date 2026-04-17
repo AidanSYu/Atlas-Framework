@@ -578,6 +578,77 @@ export interface ConfigKeysVerifyResponse {
 }
 
 // ============================================================
+// Task Runtime types (two-tier orchestration)
+// ============================================================
+
+export type TaskState =
+  | 'idle'
+  | 'initializing'
+  | 'planning'
+  | 'executing'
+  | 'reviewing'
+  | 'suspended'
+  | 'completed'
+  | 'cancelled'
+  | 'failed';
+
+export type TaskActor =
+  | 'USER'
+  | 'DEEPSEEK'
+  | 'NEMOTRON'
+  | 'TOOL_WRAPPER'
+  | 'SYSTEM_FSM'
+  | 'SYSTEM_CIRCUIT_BREAKER'
+  | 'SYSTEM_COMPACTION'
+  | 'SYSTEM_SCHEDULER'
+  | 'SYSTEM_MIGRATION';
+
+export type TaskEventType =
+  | 'USER_PROMPT'
+  | 'USER_RESPONSE'
+  | 'USER_CANCELLED'
+  | 'INIT_QUESTION'
+  | 'INIT_ANSWER'
+  | 'CONTEXT_WRITTEN'
+  | 'MANIFEST_SCOPED'
+  | 'SUPERVISOR_BRIEF'
+  | 'GOAL_BRIEF_REVISION'
+  | 'TOOL_CALL_INTENT'
+  | 'TOOL_EXECUTION_RESULT'
+  | 'TOOL_YIELD'
+  | 'ARTIFACT_WRITTEN'
+  | 'SUPERVISOR_REVIEW'
+  | 'FINAL_ANSWER'
+  | 'STATE_TRANSITION'
+  | 'SYSTEM_CIRCUIT_BREAKER'
+  | 'LOG_COMPACTED'
+  | 'SYSTEM_PLUGIN_VERSION_DRIFT';
+
+export interface TaskInfo {
+  id: string;
+  project_id: string;
+  parent_task_id: string | null;
+  title: string | null;
+  initial_prompt: string | null;
+  state: TaskState;
+  terminal_outcome: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskEvent {
+  event_id: string;
+  task_id: string;
+  sequence: number;
+  schema_version: number;
+  timestamp: string;
+  actor: TaskActor;
+  event_type: TaskEventType;
+  causal_parents: string[];
+  payload: Record<string, any>;
+}
+
+// ============================================================
 // API CLIENT
 // ============================================================
 
@@ -669,6 +740,122 @@ export const api = {
       SWARM_TIMEOUT,
     );
     return handleResponse(response);
+  },
+
+  // ---- Task Runtime (two-tier orchestration: DeepSeek + Nemotron) ----
+
+  async createTask(params: {
+    project_id: string;
+    title?: string;
+    initial_prompt?: string;
+    parent_task_id?: string;
+  }): Promise<TaskInfo> {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/api/task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    return handleResponse(response);
+  },
+
+  async listTasks(projectId: string): Promise<TaskInfo[]> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/task?project_id=${encodeURIComponent(projectId)}`
+    );
+    return handleResponse(response);
+  },
+
+  async getTask(taskId: string): Promise<TaskInfo> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}`
+    );
+    return handleResponse(response);
+  },
+
+  async listTaskEvents(taskId: string): Promise<TaskEvent[]> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/events`
+    );
+    return handleResponse(response);
+  },
+
+  async startTask(taskId: string, prompt: string, attachments: string[] = []): Promise<TaskInfo> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, attachments }),
+      },
+      SWARM_TIMEOUT,
+    );
+    return handleResponse(response);
+  },
+
+  async respondToTask(taskId: string, response_text: string, attachments: string[] = []): Promise<TaskInfo> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/respond`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ response: response_text, attachments }),
+      },
+      SWARM_TIMEOUT,
+    );
+    return handleResponse(response);
+  },
+
+  async uploadTaskAttachment(
+    taskId: string,
+    file: File,
+  ): Promise<{ filename: string; path: string; size_bytes: number; mime_type: string | null }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/attachments`,
+      { method: 'POST', body: formData },
+      SWARM_TIMEOUT,
+    );
+    return handleResponse(response);
+  },
+
+  async cancelTask(taskId: string, reason?: string): Promise<TaskInfo> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/cancel`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason || null }),
+      }
+    );
+    return handleResponse(response);
+  },
+
+  /**
+   * Subscribe to a task's event stream via SSE. `fromSequence=-1` replays from
+   * the beginning; pass the last seen sequence to resume without duplicates.
+   * Returns a cleanup function that closes the EventSource.
+   */
+  subscribeToTask(
+    taskId: string,
+    onEvent: (event: TaskEvent) => void,
+    options?: { fromSequence?: number; onError?: (err: Event) => void }
+  ): () => void {
+    const seq = options?.fromSequence ?? -1;
+    const url = `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/stream?from_sequence=${seq}`;
+    const source = new EventSource(url);
+    source.addEventListener('task_event', (e: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(e.data) as TaskEvent;
+        onEvent(parsed);
+      } catch (err) {
+        console.error('Failed to parse task_event', err);
+      }
+    });
+    source.onerror = (err) => {
+      if (options?.onError) options.onError(err);
+    };
+    return () => source.close();
   },
 
   // ---- File Management ----

@@ -1,0 +1,47 @@
+SAC305 Reflow Soldering: Process Window and Defect Modes
+
+SAC305 is the dominant lead-free solder alloy for surface-mount PCB assembly.
+Its composition is 96.5% tin, 3.0% silver, and 0.5% copper, with a liquidus
+temperature near 217 C and a typical reflow peak temperature of 235-245 C.
+
+The standard SAC305 reflow profile has four zones: preheat (room temp to 150 C),
+soak (150-180 C for 60-120 seconds), reflow (above 217 C for 30-90 seconds of
+time-above-liquidus, with peak near 240 C), and cooling (ramp-down below 5 C/s
+to prevent thermal shock).
+
+Critical Process Parameters
+
+- Peak temperature: 230-250 C; below this, solder joints do not fully wet
+  the pads; above it, component damage and warping occur
+- Time-above-liquidus (TAL): 30-90 seconds; shorter than 30s risks cold
+  joints, longer than 90s accelerates intermetallic compound growth and
+  causes excessive voids
+- Ramp rate: 1-3 C/s on heating, ≤5 C/s on cooling; faster rates cause
+  thermal-shock tombstoning on small chip components
+- Soak time: 60-120s; this equalizes temperature across the board and
+  activates flux; skipping it causes uneven wetting across mixed component
+  sizes
+
+Common Defect Modes
+
+- Cold joint: insufficient peak temperature or TAL; visible as dull, grainy
+  solder surface with poor wetting fillet
+- Overshoot damage: peak temperature above 250 C causes component body
+  damage, PCB delamination, and BGA ball collapse
+- Tombstoning: asymmetric heating on 0201/0402 chip components causes one
+  end to solder before the other; surface tension lifts the component off
+  the pad
+- Head-in-pillow: reflow profile doesn't provide enough energy to coalesce
+  the BGA ball with the pad solder; joint looks correct visually but has
+  no electrical contact
+- Excessive voids: long TAL or high peak temperature traps outgassing from
+  the flux inside the solder joint; X-ray inspection shows bubbles
+
+Physics-Based Monitoring
+
+The thermal profile at each reflow pass is a 1D time-series of board
+temperature. The manufacturing world model treats this time-series as the
+observation space and forecasts the next reflow pass from recent history.
+Change-point detection flags profile drift (oven aging, conveyor speed
+changes) before it produces a batch of defective boards. Anomaly detection
+flags individual passes that deviate from the fleet baseline.

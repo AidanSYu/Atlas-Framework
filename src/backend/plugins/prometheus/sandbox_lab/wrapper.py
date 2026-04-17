@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -13,6 +14,102 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=2)
+
+
+def _load_observations_from_path(
+    path: str,
+    parameter_columns: Optional[List[str]],
+    objective_columns: Optional[List[str]],
+    parameters: Optional[List[dict]],
+    objectives: Optional[List[dict]],
+) -> Dict[str, Any]:
+    """Load an observations CSV into the {X, Y} format the BO loop expects.
+
+    Fails LOUDLY on missing file, missing columns, or ambiguous column
+    assignment. Additive — callers that pass observations in-memory bypass
+    this entirely.
+
+    Column selection precedence:
+      1. Explicit `parameter_columns` + `objective_columns` arguments.
+      2. Inferred from `parameters[*].name` + `objectives[*].name`.
+      3. Otherwise: raise — we refuse to guess.
+    """
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"observations_path does not exist or is not a file: {path}"
+        )
+    try:
+        import pandas as pd  # type: ignore
+    except ImportError as exc:
+        raise ImportError(
+            "observations_path requires pandas. Install with: pip install pandas"
+        ) from exc
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to read observations_path '{path}' as CSV: {exc}"
+        ) from exc
+    if df.empty:
+        raise ValueError(f"observations_path '{path}' is empty.")
+
+    # Resolve column names.
+    if parameter_columns is None and parameters:
+        parameter_columns = [p["name"] for p in parameters]
+    if objective_columns is None and objectives:
+        objective_columns = [o["name"] for o in objectives]
+    if not parameter_columns or not objective_columns:
+        raise ValueError(
+            "observations_path requires parameter_columns + objective_columns "
+            "(or the `parameters` + `objectives` blocks) to know which CSV "
+            "columns are inputs (X) and which are outputs (Y). "
+            f"Got parameter_columns={parameter_columns}, "
+            f"objective_columns={objective_columns}."
+        )
+
+    missing_X = [c for c in parameter_columns if c not in df.columns]
+    missing_Y = [c for c in objective_columns if c not in df.columns]
+    if missing_X or missing_Y:
+        raise KeyError(
+            f"observations_path '{path}' is missing required column(s). "
+            f"Missing parameter columns: {missing_X}. "
+            f"Missing objective columns: {missing_Y}. "
+            f"CSV columns: {list(df.columns)}."
+        )
+
+    X = df[list(parameter_columns)].to_numpy(dtype=float)
+    Y = df[list(objective_columns)].to_numpy(dtype=float)
+    if np.isnan(X).any() or np.isnan(Y).any():
+        raise ValueError(
+            f"observations_path '{path}' contains NaN values in the selected "
+            "parameter/objective columns. Clean the CSV and retry."
+        )
+    return {"X": X.tolist(), "Y": Y.tolist()}
+
+
+def _maybe_hydrate_observations_from_path(payload: dict) -> None:
+    """If the payload carries an observations_path, populate observations in-place.
+
+    Mutates `payload` so the downstream handlers (_run_suggest, _run_pareto)
+    don't need to know about the path. Raises on any load failure — no silent
+    fallback.
+    """
+    path = payload.get("observations_path")
+    if not path:
+        return
+    if payload.get("observations"):
+        raise ValueError(
+            "Pass either observations OR observations_path, not both. "
+            "Refusing to silently pick one."
+        )
+    loaded = _load_observations_from_path(
+        path,
+        parameter_columns=payload.get("parameter_columns"),
+        objective_columns=payload.get("objective_columns"),
+        parameters=payload.get("parameters"),
+        objectives=payload.get("objectives"),
+    )
+    payload["observations"] = loaded
 
 
 def _has_botorch_stack() -> bool:
@@ -300,6 +397,7 @@ def _suggest_botorch_batch(
 
 
 def _run_suggest(payload: dict) -> dict:
+    _maybe_hydrate_observations_from_path(payload)
     parameters = payload["parameters"]
     objectives = payload["objectives"]
     constraints = payload.get("constraints", [])
@@ -395,6 +493,7 @@ def _run_optimize(payload: dict) -> dict:
 
 
 def _run_pareto(payload: dict) -> dict:
+    _maybe_hydrate_observations_from_path(payload)
     objectives = payload["objectives"]
     observations = payload["observations"]
     parameters = payload.get("parameters", [])

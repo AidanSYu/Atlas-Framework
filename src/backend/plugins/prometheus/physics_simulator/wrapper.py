@@ -8,6 +8,7 @@ built-in solder reflow heat transfer demo for self-testing.
 import asyncio
 import logging
 import math
+import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,36 @@ class PhysicsSimulatorWrapper:
         # auto: prefer FNO, fall back to PINN
         return "fno" if _HAS_NEURALOP else "pinn"
 
+    # ----- training-data loader ------------------------------------------
+    @staticmethod
+    def _load_training_data_from_path(path: str) -> Dict[str, Any]:
+        """Load an .npz with required keys 'inputs' and 'outputs'.
+
+        Fails LOUDLY (raises) on a missing file or missing keys so the
+        orchestrator sees a clear error rather than silently running on
+        synthetic data. Additive — callers that provide training_data in-memory
+        bypass this entirely.
+        """
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                f"training_data_path does not exist or is not a file: {path}"
+            )
+        try:
+            archive = np.load(path, allow_pickle=False)
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to read training_data_path '{path}' as an .npz: {exc}"
+            ) from exc
+        missing = [k for k in ("inputs", "outputs") if k not in archive.files]
+        if missing:
+            raise KeyError(
+                f"training_data_path '{path}' is missing required key(s): "
+                f"{missing}. Found keys: {list(archive.files)}."
+            )
+        inputs = archive["inputs"]
+        outputs = archive["outputs"]
+        return {"inputs": inputs, "outputs": outputs}
+
     # ----- train ----------------------------------------------------------
     def _train(self, args: dict) -> dict:
         requested = args.get("model_type", "auto")
@@ -181,8 +212,20 @@ class PhysicsSimulatorWrapper:
             return {"error": str(e)}
 
         training_data = args.get("training_data")
+        training_data_path = args.get("training_data_path")
+        if training_data_path:
+            if training_data:
+                return {"error": (
+                    "Pass either training_data OR training_data_path, not both. "
+                    "Refusing to silently pick one."
+                )}
+            try:
+                training_data = self._load_training_data_from_path(training_data_path)
+            except (FileNotFoundError, KeyError, ValueError) as exc:
+                # Loud failure — do NOT fall back to synthetic data.
+                return {"error": f"training_data_path load failed: {exc}"}
         if not training_data or "inputs" not in training_data or "outputs" not in training_data:
-            return {"error": "training_data with 'inputs' and 'outputs' arrays is required for train mode."}
+            return {"error": "training_data with 'inputs' and 'outputs' arrays (or a valid training_data_path) is required for train mode."}
 
         inputs = torch.tensor(np.array(training_data["inputs"]), dtype=torch.float32).to(DEVICE)
         outputs = torch.tensor(np.array(training_data["outputs"]), dtype=torch.float32).to(DEVICE)

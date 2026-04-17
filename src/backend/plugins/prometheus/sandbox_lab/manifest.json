@@ -86,7 +86,21 @@
             "description": "2D array of observed objective values."
           }
         },
-        "description": "Existing experimental observations."
+        "description": "Existing experimental observations (in-memory). Mutually exclusive with observations_path."
+      },
+      "observations_path": {
+        "type": "string",
+        "description": "Absolute path to a CSV of historical experiments (e.g. test_docs/manufacturing/sandbox_observations.csv). Use instead of `observations` for large tables. Parameter columns and objective columns must be identifiable via either `parameter_columns` + `objective_columns` OR inferred from the `parameters[*].name` + `objectives[*].name` blocks. Fails loudly on missing file, missing columns, NaNs."
+      },
+      "parameter_columns": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Explicit list of CSV column names to treat as the input vector X when loading observations_path. Optional if `parameters` is supplied — names there are used instead."
+      },
+      "objective_columns": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Explicit list of CSV column names to treat as the objective vector Y when loading observations_path. Optional if `objectives` is supplied — names there are used instead."
       },
       "batch_size": {
         "type": "integer",

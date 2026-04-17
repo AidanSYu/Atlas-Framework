@@ -13,9 +13,13 @@ models/*.bin
 *.csv.gz
 src/backend/test_output.txt
 
+# Raw SECOM download cache (derived CSVs under test_docs/manufacturing/ ARE tracked)
+test_docs/fetch/cache/
+
 # --- Local Config (machine-specific paths) ---
 config.yml
 .claude/settings.local.json
+.claude/worktrees/
 
 # --- Local Analysis & Scratch Files ---
 benchmark/
@@ -26,6 +30,10 @@ test_minimal.py
 test_model.py
 test_output.txt
 src/backend/app/services/plugins/*-AidanYu.py
+
+# --- Fetched dataset intermediate caches (VisA parquet shards, etc.) ---
+test_docs/fetch/cache/
+*.parquet
 
 # --- TypeScript Build Cache ---
 tsconfig.tsbuildinfo

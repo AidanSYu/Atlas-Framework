@@ -27,9 +27,10 @@ import { StatusBar } from '@/components/StatusBar';
 import TextViewer from '@/components/TextViewer';
 import { RunAuditPanel } from '@/components/chat/RunAuditPanel';
 import ChatShell from '@/components/chat/ChatShell';
+import { useAtlasTheme } from '@/hooks/useAtlasTheme';
 import { WorkspaceTabs, type WorkspaceTab } from '@/components/WorkspaceTabs';
 import type { ChatMode } from '@/hooks/useRunManager';
-import { api, type ModelRegistryResponse, type ModelStatusResponse, type ProjectInfo } from '@/lib/api';
+import { api, type ModelRegistryResponse, type ModelStatusResponse, type ProjectInfo, type TaskInfo } from '@/lib/api';
 import type { WorkspaceMode } from '@/lib/workspace-mode';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -204,8 +205,10 @@ export default function ProjectWorkspacePage() {
   const [discoverySessions, setDiscoverySessions] = useState<DiscoverySessionListItem[]>([]);
   const [activeExperimentSessionId, setActiveExperimentSessionId] = useState<string | null>(null);
   const [experimentSetupOpen, setExperimentSetupOpen] = useState(false);
-
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [tasks, setTasks] = useState<TaskInfo[]>([]);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [creatingTask, setCreatingTask] = useState(false);
+  const { theme, setTheme, toggleTheme } = useAtlasTheme();
   const [modelRegistry, setModelRegistry] = useState<ModelRegistryResponse | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelStatusResponse | null>(null);
   const [isModelSwitching, setIsModelSwitching] = useState(false);
@@ -213,21 +216,7 @@ export default function ProjectWorkspacePage() {
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const initializedProjectIdRef = useRef<string | null>(null);
 
-  const toggleTheme = useCallback(() => {
-    setTheme((currentTheme) => {
-      const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
-      document.documentElement.classList.toggle('light', nextTheme === 'light');
-      localStorage.setItem('atlas-theme', nextTheme);
-      return nextTheme;
-    });
-  }, []);
-
   useEffect(() => {
-    const savedTheme = localStorage.getItem('atlas-theme') as 'dark' | 'light' | null;
-    if (savedTheme === 'light') {
-      setTheme('light');
-      document.documentElement.classList.add('light');
-    }
     const savedMode = localStorage.getItem('atlas-workspace-mode') as WorkspaceMode | null;
     if (savedMode === 'chat' || savedMode === 'experiment' || savedMode === 'plugins') {
       setWorkspaceMode(savedMode);
@@ -501,6 +490,56 @@ export default function ProjectWorkspacePage() {
     void refreshDiscoverySessions();
   }, [refreshDiscoverySessions]);
 
+  const refreshTasks = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const list = await api.listTasks(projectId);
+      setTasks(list);
+      // If nothing selected and we have tasks, auto-pick the most recent running (or newest).
+      if (!activeTaskId && list.length > 0) {
+        const running = list.find(
+          (t) => t.state !== 'completed' && t.state !== 'cancelled' && t.state !== 'failed'
+        );
+        setActiveTaskId((running || list[0]).id);
+      }
+    } catch (err) {
+      // Non-fatal; user will see errors when creating.
+    }
+  }, [projectId, activeTaskId]);
+
+  useEffect(() => {
+    if (workspaceMode === 'experiment') {
+      void refreshTasks();
+      const poll = setInterval(() => void refreshTasks(), 4000);
+      return () => clearInterval(poll);
+    }
+  }, [workspaceMode, refreshTasks]);
+
+  const handleNewTask = useCallback(async () => {
+    if (!projectId || creatingTask) return;
+    setWorkspaceMode('experiment');
+    setCreatingTask(true);
+    try {
+      const created = await api.createTask({ project_id: projectId });
+      setTasks((prev) => [created, ...prev.filter((t) => t.id !== created.id)]);
+      setActiveTaskId(created.id);
+    } catch (err: any) {
+      toastError(err?.message || 'Failed to create task');
+    } finally {
+      setCreatingTask(false);
+    }
+  }, [projectId, creatingTask]);
+
+  const handleTaskSelect = useCallback((taskId: string) => {
+    setWorkspaceMode('experiment');
+    setActiveTaskId(taskId);
+  }, []);
+
+  const handleTaskCreated = useCallback((task: TaskInfo) => {
+    setTasks((prev) => [task, ...prev.filter((t) => t.id !== task.id)]);
+    setActiveTaskId(task.id);
+  }, []);
+
   const activeTab = openTabs.find((entry) => entry.id === activeTabId);
 
   const renderChatContent = () => {
@@ -685,7 +724,11 @@ export default function ProjectWorkspacePage() {
             discoverySessions={discoverySessions}
             activeExperimentSessionId={activeExperimentSessionId}
             onExperimentSelect={(sessionId) => void handleExperimentSelect(sessionId)}
-            onNewExperiment={() => setExperimentSetupOpen(true)}
+            onNewExperiment={() => void handleNewTask()}
+            tasks={tasks}
+            activeTaskId={activeTaskId}
+            onTaskSelect={handleTaskSelect}
+            onNewTask={() => void handleNewTask()}
           />
         </div>
 
@@ -716,8 +759,10 @@ export default function ProjectWorkspacePage() {
           {workspaceMode === 'experiment' && (
             <ExperimentWorkspace
               projectId={currentProject.id}
-              activeSessionId={activeExperimentSessionId}
-              onStartExperiment={() => setExperimentSetupOpen(true)}
+              activeTaskId={activeTaskId}
+              onNewTask={() => void handleNewTask()}
+              onTaskCreated={handleTaskCreated}
+              creating={creatingTask}
             />
           )}
 
@@ -761,6 +806,8 @@ export default function ProjectWorkspacePage() {
       <SettingsModal
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
+        theme={theme}
+        onThemeChange={(nextTheme) => setTheme(nextTheme)}
         onKeysUpdated={refreshModelRegistry}
       />
 

@@ -13,9 +13,17 @@ logger = logging.getLogger(__name__)
 try:
     from docling.document_converter import DocumentConverter
     DOCLING_AVAILABLE = True
-except ImportError:
+except Exception as _docling_exc:
+    # Docling is notoriously fragile — ImportError when missing, AttributeError or
+    # RuntimeError when a transitive dep has drifted versions. Any failure means we
+    # fall back to pdfplumber; we must not let docling's broken import kill the server.
     DOCLING_AVAILABLE = False
-    logger.info("Docling not installed - VLM parsing disabled (fallback to pdfplumber)")
+    DocumentConverter = None  # type: ignore
+    logger.warning(
+        "Docling unavailable (%s: %s) — falling back to pdfplumber",
+        type(_docling_exc).__name__,
+        _docling_exc,
+    )
 
 
 class DoclingParser:

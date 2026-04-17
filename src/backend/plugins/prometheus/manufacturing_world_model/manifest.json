@@ -21,12 +21,24 @@
       "values": {
         "type": "array",
         "items": {"type": "number"},
-        "description": "Time-series values (e.g. temperature readings in chronological order)."
+        "description": "Time-series values (e.g. temperature readings in chronological order). Omit if supplying 'data_path' instead."
       },
       "timestamps": {
         "type": "array",
         "items": {"type": "string"},
         "description": "Optional ISO-8601 timestamps aligned with values."
+      },
+      "data_path": {
+        "type": "string",
+        "description": "Absolute filesystem path to a CSV containing the time-series. When provided (and 'values' is omitted) the wrapper loads it, reads 'value_column' and 'timestamp_column', and populates 'values'/'timestamps'. Fails loud on missing file, missing column, or non-numeric values."
+      },
+      "value_column": {
+        "type": "string",
+        "description": "Name of the value column in the CSV referenced by 'data_path'. Default: 'value'."
+      },
+      "timestamp_column": {
+        "type": "string",
+        "description": "Name of the timestamp column in the CSV referenced by 'data_path'. Default: 'timestamp'. If the column is absent the wrapper proceeds without timestamps."
       },
       "horizon": {
         "type": "integer",

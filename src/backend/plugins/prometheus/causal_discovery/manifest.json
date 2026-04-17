@@ -22,19 +22,27 @@
           "type": "array",
           "items": {"type": "number"}
         },
-        "description": "2D array of shape [T, N] — T time steps, N variables."
+        "description": "2D array of shape [T, N] — T time steps, N variables. Omit if supplying 'data_path' instead."
       },
       "variable_names": {
         "type": "array",
         "items": {"type": "string"},
-        "description": "Names for each of the N variables."
+        "description": "Names for each of the N variables. Ignored when 'data_path' is used (headers come from the CSV)."
+      },
+      "data_path": {
+        "type": "string",
+        "description": "Absolute filesystem path to a tabular CSV with a header row. When provided (and 'data' is omitted) the wrapper reads all numeric columns, sets 'variable_names' from the headers, and passes the resulting 2-D float matrix through. Fails loud on missing file, non-numeric columns, or NaNs."
+      },
+      "target_column": {
+        "type": "string",
+        "description": "Alias for 'target_variable' used when 'data_path' is supplied. The wrapper resolves this against the CSV headers."
       },
       "target_variable": {
         "oneOf": [
           {"type": "string"},
           {"type": "integer"}
         ],
-        "description": "Target variable specified by name (string) or column index (integer)."
+        "description": "Target variable specified by name (string) or column index (integer). For CSV inputs prefer 'target_column'."
       },
       "max_lag": {
         "type": "integer",

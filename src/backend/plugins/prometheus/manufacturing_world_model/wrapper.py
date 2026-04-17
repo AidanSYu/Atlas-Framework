@@ -8,6 +8,7 @@ Includes built-in demo with synthetic reflow oven temperature data.
 import asyncio
 import logging
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor
 from statistics import NormalDist
 from typing import Any, Dict, List, Optional, Tuple
@@ -379,6 +380,58 @@ def _conformal_intervals(
 # Synthetic reflow oven demo data
 # ---------------------------------------------------------------------------
 
+def _load_series_from_csv(
+    data_path: str,
+    value_column: str,
+    timestamp_column: Optional[str],
+) -> Tuple[List[float], Optional[List[str]]]:
+    """Load a univariate time-series from a CSV. Fails loud on any data issue.
+
+    Returns (values, timestamps_or_None).
+    """
+    if not isinstance(data_path, str) or not data_path.strip():
+        raise RuntimeError("data_path must be a non-empty string.")
+    if not os.path.isfile(data_path):
+        raise RuntimeError(
+            f"data_path does not point to an existing file: {data_path!r}."
+        )
+    try:
+        import pandas as pd  # local import — pandas is already required for 'stats' backend
+    except ImportError as exc:
+        raise RuntimeError(
+            "Loading 'data_path' requires pandas (pip install pandas)."
+        ) from exc
+    try:
+        df = pd.read_csv(data_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to parse CSV at {data_path!r}: {exc}"
+        ) from exc
+
+    if value_column not in df.columns:
+        raise RuntimeError(
+            f"value_column {value_column!r} not found in {data_path!r}. "
+            f"Available columns: {list(df.columns)}"
+        )
+    col = df[value_column]
+    try:
+        values = col.astype(float).tolist()
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"value_column {value_column!r} is not numeric (dtype={col.dtype})."
+        ) from exc
+    if any(v != v for v in values):  # NaN check
+        raise RuntimeError(
+            f"value_column {value_column!r} contains NaN values in {data_path!r}. "
+            "Clean the CSV or forward-fill before handing it to the plugin."
+        )
+
+    timestamps: Optional[List[str]] = None
+    if timestamp_column and timestamp_column in df.columns:
+        timestamps = [str(v) for v in df[timestamp_column].tolist()]
+    return values, timestamps
+
+
 def _generate_reflow_demo() -> Tuple[np.ndarray, str]:
     """Generate 500-point synthetic reflow oven temperature profile.
 
@@ -491,8 +544,28 @@ class ManufacturingWorldModelWrapper:
             return await self._run_self_test()
 
         values_raw = args.get("values")
+        timestamps_raw = args.get("timestamps")
+        data_path = args.get("data_path")
+
+        if (values_raw is None or len(values_raw) == 0) and data_path:
+            # File-loading path: surface errors loudly — no silent fallback to
+            # self_test or synthetic data.
+            value_column = args.get("value_column") or "value"
+            timestamp_column = args.get("timestamp_column") or "timestamp"
+            values_raw, loaded_timestamps = _load_series_from_csv(
+                data_path, value_column, timestamp_column
+            )
+            if timestamps_raw is None:
+                timestamps_raw = loaded_timestamps
+
         if values_raw is None or len(values_raw) == 0:
-            return {"valid": False, "error": "No 'values' provided. Supply an array of numeric time-series values."}
+            return {
+                "valid": False,
+                "error": (
+                    "No 'values' provided. Supply an array of numeric time-series "
+                    "values OR a 'data_path' pointing at a CSV with a 'value' column."
+                ),
+            }
 
         values = np.array(values_raw, dtype=float)
         horizon = int(args.get("horizon", 64))
