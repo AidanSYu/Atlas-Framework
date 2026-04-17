@@ -6,8 +6,11 @@ import { appWindow } from '@tauri-apps/api/window';
 
 export function WindowControls() {
     const [isMaximized, setIsMaximized] = useState(false);
+    const isTauri = typeof window !== 'undefined' && window.__TAURI__ !== undefined;
 
     useEffect(() => {
+        if (!isTauri) return;
+
         // Check initial state
         appWindow.isMaximized().then(setIsMaximized);
 
@@ -20,7 +23,11 @@ export function WindowControls() {
         return () => {
             unlisten.then((f) => f());
         };
-    }, []);
+    }, [isTauri]);
+
+    if (!isTauri) {
+        return null; // Don't render window controls in browser
+    }
 
     return (
         <div className="flex h-full items-center">
