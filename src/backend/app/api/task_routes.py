@@ -9,6 +9,9 @@ Endpoints (prefix: /api/task):
     POST   /{task_id}/respond         answer a SUSPENDED task's pending question
     POST   /{task_id}/cancel          cancel the task
     GET    /{task_id}/stream          SSE: stream events for this task (live + history)
+
+Per-project isolation: a task's `project_id` is resolved by scanning the
+registry (TaskService.find_task) when not in the URL, since UUIDs are unique.
 """
 from __future__ import annotations
 
@@ -33,18 +36,12 @@ from app.services.workspace_manager import get_workspace_manager
 
 
 def _to_utc_iso(value: Optional[datetime]) -> str:
-    """Serialize a naive-UTC datetime as an ISO-8601 string with an explicit `Z` suffix.
-
-    The Task service writes naive datetimes produced by ``datetime.utcnow()``.
-    Emitting them without a timezone marker makes JavaScript parse them as LOCAL
-    time, which shifts displayed timestamps by the client's offset (users saw
-    "sent 8 hours ago" for fresh messages). Normalising on the wire fixes it.
-    """
     if value is None:
         return ""
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 router = APIRouter(prefix="/api/task", tags=["task"])
 logger = logging.getLogger(__name__)
@@ -64,9 +61,6 @@ class TaskCreateRequest(BaseModel):
 
 class TaskStartRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
-    # Attachment file paths as returned by POST /{task_id}/attachments. Nemotron
-    # sees these paths in its user message; plugins that accept a file_path /
-    # image_path argument can reference them.
     attachments: List[str] = Field(default_factory=list)
 
 
@@ -77,7 +71,7 @@ class TaskRespondRequest(BaseModel):
 
 class TaskAttachmentResponse(BaseModel):
     filename: str
-    path: str          # absolute path Nemotron can pass to tools
+    path: str
     size_bytes: int
     mime_type: Optional[str] = None
 
@@ -143,6 +137,13 @@ def _event_to_response(evt: TaskEventDTO) -> TaskEventResponse:
     )
 
 
+def _resolve_task_or_404(task_id: str) -> TaskRecord:
+    rec = get_task_service().find_task(task_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return rec
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -172,24 +173,23 @@ async def list_tasks(project_id: str = Query(...)) -> List[TaskResponse]:
 
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_task(task_id: str) -> TaskResponse:
-    rec = get_task_service().get_task(task_id)
-    if rec is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return _record_to_response(rec)
+    return _record_to_response(_resolve_task_or_404(task_id))
 
 
 @router.get("/{task_id}/events", response_model=List[TaskEventResponse])
 async def list_task_events(task_id: str) -> List[TaskEventResponse]:
-    events = get_task_service().list_events(task_id)
+    rec = _resolve_task_or_404(task_id)
+    events = get_task_service().list_events(rec.project_id, task_id)
     return [_event_to_response(e) for e in events]
 
 
 @router.post("/{task_id}/start", response_model=TaskResponse)
 async def start_task(task_id: str, body: TaskStartRequest) -> TaskResponse:
+    rec = _resolve_task_or_404(task_id)
     service = get_task_service()
     try:
         rec = await service.start_task(
-            task_id, body.prompt.strip(), attachments=body.attachments
+            rec.project_id, task_id, body.prompt.strip(), attachments=body.attachments
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -201,9 +201,10 @@ async def start_task(task_id: str, body: TaskStartRequest) -> TaskResponse:
 
 @router.post("/{task_id}/respond", response_model=TaskResponse)
 async def respond_to_task(task_id: str, body: TaskRespondRequest) -> TaskResponse:
+    rec = _resolve_task_or_404(task_id)
     try:
         rec = await get_task_service().respond_to_suspended(
-            task_id, body.response.strip(), attachments=body.attachments
+            rec.project_id, task_id, body.response.strip(), attachments=body.attachments
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -217,25 +218,15 @@ async def respond_to_task(task_id: str, body: TaskRespondRequest) -> TaskRespons
 async def upload_task_attachment(
     task_id: str, file: UploadFile = File(...)
 ) -> TaskAttachmentResponse:
-    """Upload a file to this task's attachment dir; return the absolute path.
-
-    The returned path is what the user embeds in their next prompt (or what
-    the frontend bundles into the start/respond request `attachments` list).
-    Tools that accept a file_path argument can open it directly.
-    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
-    service = get_task_service()
-    rec = service.get_task(task_id)
-    if rec is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+    rec = _resolve_task_or_404(task_id)
 
     manager = get_workspace_manager()
     target_dir = manager.task_attachments_path(rec.project_id, task_id)
 
-    # Collision-safe filename; keep original for display but prefix with uuid.
-    safe_name = Path(file.filename).name  # strip any path components the client sent
+    safe_name = Path(file.filename).name
     stored_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
     target_path = target_dir / stored_name
 
@@ -256,8 +247,11 @@ async def upload_task_attachment(
 
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
 async def cancel_task(task_id: str, body: Optional[TaskCancelRequest] = None) -> TaskResponse:
+    rec = _resolve_task_or_404(task_id)
     try:
-        rec = await get_task_service().cancel_task(task_id, reason=body.reason if body else None)
+        rec = await get_task_service().cancel_task(
+            rec.project_id, task_id, reason=body.reason if body else None
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _record_to_response(rec)
@@ -265,40 +259,27 @@ async def cancel_task(task_id: str, body: Optional[TaskCancelRequest] = None) ->
 
 @router.get("/{task_id}/stream")
 async def stream_task(task_id: str, from_sequence: int = Query(-1, ge=-1)):
-    """Server-Sent Events stream of task events.
-
-    Clients receive a replay of any events with sequence > `from_sequence`
-    followed by live events as they land. Use `from_sequence=-1` (default)
-    to start from the beginning.
-    """
-    task = get_task_service().get_task(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+    """Server-Sent Events stream of task events (live + history backfill)."""
+    rec = _resolve_task_or_404(task_id)
+    project_id = rec.project_id
 
     log = get_task_log()
 
     async def event_generator():
-        # Yield a comment immediately so response headers flush before any
-        # blocking on queue.get(). Without this, an empty-history task would
-        # leave the browser waiting for the 200 OK until the first real event.
         yield ": stream open\n\n"
 
-        # Subscribe BEFORE reading history so we don't drop in-flight events.
         queue = await log.subscribe(task_id)
         try:
-            # Backfill
-            history = log.list_events_after(task_id, from_sequence)
+            history = log.list_events_after(project_id, task_id, from_sequence)
             seen_max_seq = from_sequence
             for evt in history:
                 yield _sse_event(evt)
                 seen_max_seq = max(seen_max_seq, evt.sequence)
 
-            # Live
             while True:
                 try:
                     evt = await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
-                    # SSE heartbeat keeps the connection alive on proxies
                     yield ": keepalive\n\n"
                     continue
                 if evt.sequence <= seen_max_seq:
@@ -308,9 +289,6 @@ async def stream_task(task_id: str, from_sequence: int = Query(-1, ge=-1)):
         finally:
             log.unsubscribe(task_id, queue)
 
-    # Headers matter: disable gzip buffering (GZipMiddleware would hold tiny SSE
-    # events until the 1KB threshold is reached, which kills live streaming) and
-    # disable proxy/nginx buffering.
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",

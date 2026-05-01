@@ -81,8 +81,9 @@ export default function LibrarySidebar({
 
   const handleDelete = async (e: React.MouseEvent, fileId: string) => {
     e.stopPropagation();
+    if (!projectId) return;
     try {
-      await api.deleteFile(fileId);
+      await api.deleteFile(fileId, projectId);
       onFileDeleted?.(fileId);
       setFiles((prev) => prev.filter((f) => f.doc_id !== fileId));
     } catch (err) {

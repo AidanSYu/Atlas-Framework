@@ -1,39 +1,40 @@
-"""Document service for file management (SQLite + embedded Qdrant)."""
+"""Document service for file management (per-project SQLite + per-project Qdrant)."""
 from typing import List, Dict, Any, Optional
-from sqlalchemy.orm import Session
 from pathlib import Path
 from fastapi.responses import FileResponse
 import logging
 
-from app.core.database import get_session, Document, DocumentChunk, Node, Edge
-from app.core.config import settings
-from app.core.qdrant_store import get_qdrant_client
+from app.core.database import (
+    Document,
+    DocumentChunk,
+    Edge,
+    Node,
+    get_project_session,
+)
+from app.core.qdrant_store import PROJECT_QDRANT_COLLECTION, get_qdrant_client
 from app.services.bm25_index import get_bm25_service
 
 logger = logging.getLogger(__name__)
 
 
 class DocumentService:
-    """Manages document storage and retrieval."""
+    """Manages document storage and retrieval, scoped per project."""
 
     def __init__(self):
         pass
 
     def list_documents(
         self,
+        project_id: str,
         status: Optional[str] = None,
-        project_id: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """List all documents with optional status/project filter. Self-healing for orphaned records."""
-        session = get_session()
+        """List documents in a project. Auto-deletes records whose backing file is gone."""
+        session = get_project_session(project_id)
         try:
             query = session.query(Document)
-
             if status:
                 query = query.filter(Document.status == status)
-            if project_id:
-                query = query.filter(Document.project_id == project_id)
 
             documents = query.order_by(Document.uploaded_at.desc()).limit(limit).all()
 
@@ -52,7 +53,6 @@ class DocumentService:
 
                 result.append(self._document_to_dict(doc))
 
-            # Auto-delete orphaned database records
             if orphaned_docs:
                 logger.info(f"Auto-deleting {len(orphaned_docs)} orphaned document records")
                 for orphaned_doc in orphaned_docs:
@@ -73,9 +73,8 @@ class DocumentService:
         finally:
             session.close()
 
-    def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        """Get document by ID."""
-        session = get_session()
+    def get_document(self, project_id: str, doc_id: str) -> Optional[Dict[str, Any]]:
+        session = get_project_session(project_id)
         try:
             document = session.query(Document).filter(Document.id == doc_id).first()
             if not document:
@@ -84,9 +83,8 @@ class DocumentService:
         finally:
             session.close()
 
-    def get_document_file(self, doc_id: str) -> Optional[FileResponse]:
-        """Get document file for streaming."""
-        session = get_session()
+    def get_document_file(self, project_id: str, doc_id: str) -> Optional[FileResponse]:
+        session = get_project_session(project_id)
         try:
             document = session.query(Document).filter(Document.id == doc_id).first()
             if not document:
@@ -112,9 +110,9 @@ class DocumentService:
         finally:
             session.close()
 
-    def delete_document(self, doc_id: str) -> bool:
-        """Delete document from all knowledge layers."""
-        session = get_session()
+    def delete_document(self, project_id: str, doc_id: str) -> bool:
+        """Delete a document from every store (vectors, chunks, graph, file, row)."""
+        session = get_project_session(project_id)
         try:
             document = session.query(Document).filter(Document.id == doc_id).first()
             if not document:
@@ -122,11 +120,11 @@ class DocumentService:
 
             doc_id_str = str(doc_id)
 
-            # 1. Delete from Qdrant vector store (use shared singleton client)
+            # 1. Delete from this project's Qdrant
             try:
                 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-                qdrant_client = get_qdrant_client()
+                qdrant_client = get_qdrant_client(project_id)
 
                 filter_condition = Filter(
                     must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id_str))]
@@ -136,7 +134,7 @@ class DocumentService:
                 offset = None
                 while True:
                     scroll_result = qdrant_client.scroll(
-                        collection_name=settings.QDRANT_COLLECTION,
+                        collection_name=PROJECT_QDRANT_COLLECTION,
                         scroll_filter=filter_condition,
                         limit=100,
                         offset=offset,
@@ -151,20 +149,20 @@ class DocumentService:
 
                 if point_ids:
                     qdrant_client.delete(
-                        collection_name=settings.QDRANT_COLLECTION, points_selector=point_ids
+                        collection_name=PROJECT_QDRANT_COLLECTION, points_selector=point_ids
                     )
                     logger.info(f"Deleted {len(point_ids)} vectors from Qdrant for doc {doc_id_str}")
             except Exception as e:
                 logger.warning(f"Error deleting from Qdrant for doc {doc_id_str}: {e}")
 
-            # 1.5. Remove from BM25 sparse index
+            # 2. BM25 index removal (in-memory or per-project file — see bm25 service)
             try:
                 get_bm25_service().remove_document(doc_id_str)
                 logger.info(f"Removed doc {doc_id_str} from BM25 index")
             except Exception as e:
                 logger.warning(f"Error removing from BM25 index for doc {doc_id_str}: {e}")
 
-            # 2. Delete document chunks
+            # 3. Delete chunks
             try:
                 session.query(DocumentChunk).filter(
                     DocumentChunk.document_id == doc_id
@@ -172,7 +170,7 @@ class DocumentService:
             except Exception as e:
                 logger.warning(f"Error deleting chunks for doc {doc_id_str}: {e}")
 
-            # 3. Delete related nodes and edges
+            # 4. Delete related nodes and edges
             try:
                 nodes = session.query(Node).filter(Node.document_id == doc_id).all()
                 node_ids = [node.id for node in nodes]
@@ -188,7 +186,7 @@ class DocumentService:
             except Exception as e:
                 logger.warning(f"Error deleting nodes/edges for doc {doc_id_str}: {e}")
 
-            # 4. Delete file
+            # 5. Delete the on-disk file
             try:
                 file_path = Path(document.file_path)
                 if file_path.exists():
@@ -198,7 +196,7 @@ class DocumentService:
             except Exception as e:
                 logger.warning(f"Error deleting file {document.file_path}: {e}")
 
-            # 5. Delete from database
+            # 6. Delete the row
             session.delete(document)
             session.commit()
 
@@ -212,7 +210,6 @@ class DocumentService:
             session.close()
 
     def _document_to_dict(self, document: Document) -> Dict[str, Any]:
-        """Convert Document ORM object to dictionary."""
         status = document.status
         if status == "completed":
             status = "indexed"

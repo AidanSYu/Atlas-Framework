@@ -53,7 +53,7 @@ interface GraphState {
   lastRenderTime: number;
   
   // Actions
-  loadGraph: (projectId?: string, documentId?: string) => Promise<void>;
+  loadGraph: (projectId: string, documentId?: string) => Promise<void>;
   setSelectedNode: (nodeId: string | null) => void;
   setFocusedNode: (nodeId: string | null) => void;
   expandNode: (nodeId: string) => Promise<void>;
@@ -114,7 +114,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     
     try {
       // Load document-specific graph if documentId provided, else project-wide
-      const graphData = await api.getFullGraph(documentId || undefined, projectId);
+      const graphData = await api.getFullGraph(projectId, documentId || undefined);
       
       const nodes: GraphNode[] = graphData.nodes.map((e: EntityInfo) => ({
         id: e.id,
@@ -140,7 +140,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       
       if (documentId && projectId) {
         try {
-          const globalData = await api.getFullGraph(undefined, projectId);
+          const globalData = await api.getFullGraph(projectId);
           allNodes = globalData.nodes.map((e: EntityInfo) => ({
             id: e.id,
             name: e.name,
@@ -233,8 +233,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   expandNode: async (nodeId) => {
+    const { projectId } = get();
+    if (!projectId) return;
     try {
-      const rels = await api.getEntityRelationships(nodeId, 'both');
+      const rels = await api.getEntityRelationships(nodeId, projectId, 'both');
       const { nodes, links } = get();
       
       const existingNodeIds = new Set(nodes.map(n => n.id));
@@ -308,6 +310,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   refreshGraph: async () => {
     const { projectId, documentId } = get();
-    await get().loadGraph(projectId || undefined, documentId || undefined);
+    if (!projectId) return;
+    await get().loadGraph(projectId, documentId || undefined);
   },
 }));

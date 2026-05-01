@@ -9,7 +9,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.core.database import Document, get_session
+from app.core.database import Document, get_project_session
 from app.services.exporters.bibtex import BibTeXExporter
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class MarkdownExporter:
         doc_ids = list({c["doc_id"] for c in citations if c.get("doc_id")})
 
         # Fetch document metadata for cited sources
-        doc_metadata_map = self._fetch_document_metadata(doc_ids)
+        doc_metadata_map = self._fetch_document_metadata(project_id, doc_ids)
 
         # Build YAML front matter
         front_matter = self._build_front_matter(title, author, style)
@@ -73,7 +73,7 @@ class MarkdownExporter:
         markdown = f"{front_matter}\n{md_content}\n\n{bibliography}"
 
         # Generate companion BibTeX file
-        bibtex = self.bibtex_exporter.export_documents(doc_ids)
+        bibtex = self.bibtex_exporter.export_documents(project_id, doc_ids)
 
         # Suggested filename
         slug = re.sub(r"[^\w\s-]", "", title.lower())
@@ -286,13 +286,13 @@ class MarkdownExporter:
         return "\n".join(lines)
 
     def _fetch_document_metadata(
-        self, doc_ids: List[str]
+        self, project_id: str, doc_ids: List[str]
     ) -> Dict[str, Dict[str, Any]]:
-        """Fetch doc_metadata for a list of document IDs."""
+        """Fetch doc_metadata for a list of document IDs in a project."""
         if not doc_ids:
             return {}
 
-        session = get_session()
+        session = get_project_session(project_id)
         try:
             documents = (
                 session.query(Document)

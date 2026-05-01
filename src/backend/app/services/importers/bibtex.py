@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.core.database import Document, get_session
+from app.core.database import Document, get_project_session
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class BibTeXImporter:
         imported = []
         skipped = []
 
-        session = get_session()
+        session = get_project_session(project_id)
         try:
             for entry in entries:
                 bibtex_key = entry.get("ID", "")
@@ -231,7 +231,7 @@ class RISImporter:
         imported = []
         skipped = []
 
-        session = get_session()
+        session = get_project_session(project_id)
         try:
             for entry in entries:
                 title = entry.get("title", "Untitled")

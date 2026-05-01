@@ -57,11 +57,10 @@ class SynthesisMemoryService:
             self._llm_service = LLMService.get_instance()
         return self._llm_service
 
-    def _get_qdrant(self):
-        if self._qdrant_client is None:
-            from app.core.qdrant_store import get_qdrant_client
-            self._qdrant_client = get_qdrant_client()
-        return self._qdrant_client
+    def _get_qdrant(self, project_id: str):
+        # Per-project; never cache across projects.
+        from app.core.qdrant_store import get_qdrant_client
+        return get_qdrant_client(project_id)
 
     # ------------------------------------------------------------------
     # Public API — record_experiment
@@ -119,9 +118,9 @@ class SynthesisMemoryService:
         self, node_id: str, project_id: str, props: Dict[str, Any]
     ) -> None:
         """Synchronous DB write — called inside run_in_executor."""
-        from app.core.database import get_session, Node, Edge
+        from app.core.database import get_project_session, Node, Edge
 
-        session = get_session()
+        session = get_project_session(project_id)
         try:
             node = Node(
                 id=node_id,
@@ -196,7 +195,7 @@ class SynthesisMemoryService:
             assay_result:        Assay result dict (optional).
             notes:               Researcher notes (optional).
         """
-        from app.core.config import settings
+        from app.core.qdrant_store import PROJECT_QDRANT_COLLECTION
 
         summary = self._build_summary(smiles, route, match_score, assay_result, notes)
         logger.info(f"Embedding experiment summary for node {experiment_node_id}")
@@ -204,8 +203,8 @@ class SynthesisMemoryService:
         llm = self._get_llm()
         vector = await llm.embed(summary)
 
-        qdrant = self._get_qdrant()
-        collection = settings.QDRANT_COLLECTION
+        qdrant = self._get_qdrant(project_id)
+        collection = PROJECT_QDRANT_COLLECTION
         point_id = str(uuid.uuid4())
 
         loop = asyncio.get_running_loop()
@@ -310,16 +309,13 @@ class SynthesisMemoryService:
 
         query_fp = AllChem.GetMorganFingerprintAsBitVect(query_mol, radius=2, nBits=2048)
 
-        from app.core.database import get_session, Node
+        from app.core.database import get_project_session, Node
 
-        session = get_session()
+        session = get_project_session(project_id)
         try:
             existing = (
                 session.query(Node)
-                .filter(
-                    Node.label == self.NODE_LABEL,
-                    Node.project_id == project_id,
-                )
+                .filter(Node.label == self.NODE_LABEL)
                 .all()
             )
         finally:

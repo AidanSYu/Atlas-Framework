@@ -20,10 +20,16 @@ import json
 import logging
 import asyncio
 
-from app.core.database import get_session, Node, Edge, Document, DocumentChunk
+from app.core.database import (
+    Document,
+    DocumentChunk,
+    Edge,
+    Node,
+    get_project_session,
+)
 from app.core.config import settings
 from app.services.llm import LLMService
-from app.core.qdrant_store import get_qdrant_client
+from app.core.qdrant_store import PROJECT_QDRANT_COLLECTION, get_qdrant_client
 from app.services.rerank import get_rerank_service
 from app.services.bm25_index import get_bm25_service, rrf_fuse
 logger = logging.getLogger(__name__)
@@ -34,13 +40,12 @@ class RetrievalService:
 
     def __init__(self):
         self.llm_service = LLMService.get_instance()
-        # Embedded Qdrant - shared singleton
-        self.qdrant_client = get_qdrant_client()
-        self.collection_name = settings.QDRANT_COLLECTION
+        # Per-project Qdrant client + collection are resolved at method-call time.
+        self.collection_name = PROJECT_QDRANT_COLLECTION
         self.reranker = get_rerank_service()
         # Atlas 3.0: BM25 sparse retrieval
         self.bm25_service = get_bm25_service()
-        logger.info("RetrievalService initialized (embedded Qdrant + BM25)")
+        logger.info("RetrievalService initialized")
 
     async def _embed_text(self, text: str) -> List[float]:
         """Generate embedding using bundled LLM service."""
@@ -133,7 +138,7 @@ If no dates/entities found, return empty arrays."""
     async def query_atlas(
         self,
         user_question: str,
-        project_id: Optional[str] = None,
+        project_id: str,
         mode: str = "librarian",
     ) -> Dict[str, Any]:
         """
@@ -141,12 +146,15 @@ If no dates/entities found, return empty arrays."""
 
         Args:
             user_question: The query string
-            project_id: Optional project scope
+            project_id: Project scope (required)
 
         Returns:
             Dict with answer, context (vector_chunks, graph_nodes, graph_edges)
         """
-        session = get_session()
+        if not project_id:
+            raise ValueError("project_id is required for retrieval")
+        qdrant_client = get_qdrant_client(project_id)
+        session = get_project_session(project_id)
         try:
             # Step 0: Extract entities/dates from query
             query_info = await self._extract_query_entities(user_question)
@@ -177,7 +185,7 @@ If no dates/entities found, return empty arrays."""
                 query_embedding = await self._embed_text(user_question)
 
                 def _qdrant_search():
-                    return self.qdrant_client.query_points(
+                    return qdrant_client.query_points(
                         collection_name=self.collection_name,
                         query=query_embedding,
                         limit=20,
@@ -218,7 +226,7 @@ If no dates/entities found, return empty arrays."""
                             try:
                                 chunk_result = await loop.run_in_executor(
                                     None,
-                                    lambda cid=chunk_id: self.qdrant_client.retrieve(
+                                    lambda cid=chunk_id: qdrant_client.retrieve(
                                         collection_name=self.collection_name, ids=[cid]
                                     ),
                                 )

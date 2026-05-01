@@ -66,7 +66,7 @@ export default function ContextEngine({
     setStructureLoading(true);
     setDocStructure(null);
 
-    api.getDocumentStructure(selectedDocId)
+    api.getDocumentStructure(selectedDocId, projectId)
       .then((data) => {
         if (!cancelled) setDocStructure(data);
       })
@@ -78,7 +78,7 @@ export default function ContextEngine({
       });
 
     return () => { cancelled = true; };
-  }, [selectedDocId]);
+  }, [selectedDocId, projectId]);
 
   const allCitations = useMemo(() => {
     const citations: Array<{

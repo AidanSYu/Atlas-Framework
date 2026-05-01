@@ -69,6 +69,7 @@ class ExecutorResult:
 class ExecutorBrief:
     """Input to the executor — a distilled view of the goal brief."""
     task_id: str
+    project_id: str
     goal_statement: str
     definition_of_done: str
     active_manifest: List[str]
@@ -98,7 +99,7 @@ class TaskExecutor:
         try:
             await self._orchestrator.ensure_model_loaded()
         except Exception as exc:
-            self._emit_circuit_breaker(brief.task_id, "fatal_wrapper_crash", {"error": str(exc)})
+            self._emit_circuit_breaker(brief.project_id, brief.task_id, "fatal_wrapper_crash", {"error": str(exc)})
             return ExecutorResult(exit_reason=ExecutorExit.FATAL, fatal_error=str(exc))
 
         messages: List[Dict[str, str]] = [
@@ -116,7 +117,7 @@ class TaskExecutor:
             try:
                 raw = await self._orchestrator._generate(messages)  # uses loaded model
             except Exception as exc:
-                self._emit_circuit_breaker(brief.task_id, "fatal_wrapper_crash", {"error": str(exc), "phase": "generate"})
+                self._emit_circuit_breaker(brief.project_id, brief.task_id, "fatal_wrapper_crash", {"error": str(exc), "phase": "generate"})
                 return ExecutorResult(exit_reason=ExecutorExit.FATAL, fatal_error=str(exc), turns=turn - 1)
 
             tool_calls = AtlasOrchestratorService._extract_tool_calls(raw)
@@ -144,6 +145,7 @@ class TaskExecutor:
                     if not isinstance(suggestions, list):
                         suggestions = [str(suggestions)]
                     self._log.append(
+                        brief.project_id,
                         brief.task_id,
                         Actor.NEMOTRON,
                         EventType.TOOL_YIELD,
@@ -159,6 +161,7 @@ class TaskExecutor:
                 # ---- Real plugin / core tool ----
                 call_id = str(uuid.uuid4())
                 self._log.append(
+                    brief.project_id,
                     brief.task_id,
                     Actor.NEMOTRON,
                     EventType.TOOL_CALL_INTENT,
@@ -178,6 +181,7 @@ class TaskExecutor:
                         f"with reason='toolkit_insufficient'."
                     )
                     self._log.append(
+                        brief.project_id,
                         brief.task_id,
                         Actor.TOOL_WRAPPER,
                         EventType.TOOL_EXECUTION_RESULT,
@@ -209,6 +213,7 @@ class TaskExecutor:
 
                 summary_text, truncated = _truncate(summary, _MAX_TOOL_OUTPUT_CHARS)
                 self._log.append(
+                    brief.project_id,
                     brief.task_id,
                     Actor.TOOL_WRAPPER,
                     EventType.TOOL_EXECUTION_RESULT,
@@ -235,6 +240,7 @@ class TaskExecutor:
                     error_tracker[key] = error_tracker.get(key, 0) + 1
                     if error_tracker[key] >= _SAME_ERROR_THRESHOLD:
                         self._emit_circuit_breaker(
+                            brief.project_id,
                             brief.task_id,
                             "error_threshold_exceeded",
                             {"tool_name": tool_name, "consecutive_errors": error_tracker[key]},
@@ -255,7 +261,7 @@ class TaskExecutor:
             )
 
         # Loop limit reached
-        self._emit_circuit_breaker(brief.task_id, "loop_limit_exceeded", {"turns": loop_limit})
+        self._emit_circuit_breaker(brief.project_id, brief.task_id, "loop_limit_exceeded", {"turns": loop_limit})
         return ExecutorResult(exit_reason=ExecutorExit.CIRCUIT_BREAKER_LOOP, turns=loop_limit)
 
     # ------------------------------------------------------------------
@@ -365,8 +371,9 @@ class TaskExecutor:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _emit_circuit_breaker(self, task_id: str, reason: str, context: Dict[str, Any]) -> None:
+    def _emit_circuit_breaker(self, project_id: str, task_id: str, reason: str, context: Dict[str, Any]) -> None:
         self._log.append(
+            project_id,
             task_id,
             Actor.SYSTEM_CIRCUIT_BREAKER,
             EventType.SYSTEM_CIRCUIT_BREAKER,

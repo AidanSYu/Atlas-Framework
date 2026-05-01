@@ -32,38 +32,30 @@ def get_resource_path(relative_path: str) -> Path:
 
 
 def setup_environment():
-    """Set up environment variables for bundled app."""
+    """Set up environment variables for bundled app.
+
+    Per-project state (SQLite, Qdrant) lives inside each project's folder
+    under ATLAS_WORKSPACES_DIR and is not configured here. Only the shared
+    models dir + workspaces root are set up at app startup.
+    """
     if hasattr(sys, '_MEIPASS'):
-        # Bundled: use user AppData so users can add models without touching Program Files
         if sys.platform == 'win32':
             app_data = Path(os.environ.get('LOCALAPPDATA', '')) / 'Atlas'
         elif sys.platform == 'darwin':
             app_data = Path.home() / 'Library' / 'Application Support' / 'Atlas'
         else:
             app_data = Path.home() / '.atlas'
-        
+
         app_data.mkdir(parents=True, exist_ok=True)
         models_dir = app_data / 'models'
         models_dir.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault('MODELS_DIR', str(models_dir))
         logger.info(f"Using models from: {models_dir}")
-        
-        # Set upload directory to user's app data
-        upload_dir = app_data / 'uploads'
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault('UPLOAD_DIR', str(upload_dir))
-        logger.info(f"Using upload directory: {upload_dir}")
-        
-        # SQLite database (embedded)
-        db_path = app_data / 'atlas.db'
-        os.environ.setdefault('DATABASE_PATH', str(db_path))
-        logger.info(f"Using database: {db_path}")
-        
-        # Qdrant storage (embedded, in-process)
-        qdrant_dir = app_data / 'qdrant_storage'
-        qdrant_dir.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault('QDRANT_STORAGE_PATH', str(qdrant_dir))
-        logger.info(f"Using Qdrant storage: {qdrant_dir}")
+
+        workspaces_dir = app_data / 'workspaces'
+        workspaces_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault('ATLAS_WORKSPACES_DIR', str(workspaces_dir))
+        logger.info(f"Using workspaces dir: {workspaces_dir}")
     else:
         # Dev: models live in the repo-root models/ directory.
         dev_models = Path(__file__).resolve().parent.parent.parent / "models"
@@ -75,10 +67,13 @@ def main():
     """Start the Atlas backend server."""
     import uvicorn
 
-    # Set up environment for bundled app (before loading config)
     setup_environment()
 
     from app.core.config import settings
+    from app.core import registry
+    registry.init_registry()
+    logger.info(f"Project registry: {registry.registry_path()}")
+
     host = settings.API_HOST
     port = settings.API_PORT
 

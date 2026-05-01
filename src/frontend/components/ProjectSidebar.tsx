@@ -468,9 +468,10 @@ function FileList({
   }, [hasProcessing, loadFiles, onIngestionComplete]);
 
   const handleDelete = async (docId: string) => {
+    if (!projectId) return;
     setDeletingId(docId);
     try {
-      await api.deleteFile(docId);
+      await api.deleteFile(docId, projectId);
       setFiles((prev) => prev.filter((file) => file.doc_id !== docId));
       onFileDeleted?.(docId);
     } catch (error) {

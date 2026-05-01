@@ -582,7 +582,7 @@ export default function ProjectWorkspacePage() {
         if (/\.(txt|text|md|csv|log|json|xml)$/i.test(filename)) {
           return (
             <TextViewer
-              fileUrl={api.getFileUrl(docId)}
+              fileUrl={api.getFileUrl(docId, currentProject.id)}
               filename={filename}
               docId={docId}
               projectId={currentProject.id}
@@ -593,7 +593,7 @@ export default function ProjectWorkspacePage() {
 
         return (
           <PDFViewer
-            fileUrl={api.getFileUrl(docId)}
+            fileUrl={api.getFileUrl(docId, currentProject.id)}
             filename={filename}
             docId={docId}
             projectId={currentProject.id}

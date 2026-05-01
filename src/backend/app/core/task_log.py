@@ -1,19 +1,13 @@
-"""Append-only task event log.
+"""Append-only task event log (per-project SQLite).
 
-The log is THE source of truth. Every state the UI shows, every context
-window Nemotron reads, every audit trail is derived from here. The writer
-is the single point where events enter the system — validates payload,
-increments the per-task sequence, inserts the row.
+The log is THE source of truth. Every method that touches the database
+takes `project_id` so the right per-project DB is used; in-memory
+subscription fanout is project-agnostic (keyed only by task_id).
 
 Read paths:
-- `list_events(task_id)` — full ordered log for a task (audit, UI trace).
-- `list_events_after(task_id, sequence)` — for SSE streaming deltas.
-- `nemotron_view(task_id)` — filtered / compacted view for the tool-loop
-  model's context window (for v1 returns the full log; compaction plugs in
-  later by replacing ranges with LOG_COMPACTED summaries).
-
-The `subscribe(task_id)` queue is an in-process fan-out so SSE handlers can
-see events the moment they're written, without polling the DB.
+- `list_events(project_id, task_id)` — full ordered log for a task.
+- `list_events_after(project_id, task_id, sequence)` — for SSE streaming deltas.
+- `nemotron_view(project_id, task_id)` — filtered view for the tool-loop model.
 """
 from __future__ import annotations
 
@@ -22,11 +16,11 @@ import logging
 import threading
 import uuid
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.core.database import Task, TaskEvent, get_session
+from app.core.database import Task, TaskEvent, get_project_session
 from app.core.task_events import (
     SCHEMA_VERSION,
     Actor,
@@ -42,7 +36,6 @@ class TaskLog:
     """Thread-safe, append-only event log with in-process subscribers."""
 
     def __init__(self) -> None:
-        # Per-task subscription queues for SSE streaming.
         self._subscribers: Dict[str, List[asyncio.Queue[TaskEventDTO]]] = {}
         self._lock = threading.Lock()
 
@@ -52,25 +45,17 @@ class TaskLog:
 
     def append(
         self,
+        project_id: str,
         task_id: str,
         actor: Actor,
         event_type: EventType,
         payload: Dict[str, Any],
         causal_parents: Optional[List[str]] = None,
     ) -> TaskEventDTO:
-        """Validate + insert + fan-out to subscribers.
-
-        The database transaction is the serialization point — two concurrent
-        writers on the same task race on the UNIQUE(task_id, sequence) index
-        and the loser retries. SQLite's row-level locking makes this safe
-        enough for embedded use.
-        """
         validated = validate_payload(event_type, payload)
-        db: Session = get_session()
+        db: Session = get_project_session(project_id)
         try:
-            task = db.query(Task).filter(Task.id == task_id).with_for_update().first() \
-                if db.bind.dialect.name != "sqlite" else \
-                db.query(Task).filter(Task.id == task_id).first()
+            task = db.query(Task).filter(Task.id == task_id).first()
             if task is None:
                 raise ValueError(f"Task {task_id} not found")
 
@@ -106,8 +91,8 @@ class TaskLog:
     # Read path
     # ------------------------------------------------------------------
 
-    def list_events(self, task_id: str) -> List[TaskEventDTO]:
-        db: Session = get_session()
+    def list_events(self, project_id: str, task_id: str) -> List[TaskEventDTO]:
+        db: Session = get_project_session(project_id)
         try:
             rows = (
                 db.query(TaskEvent)
@@ -119,8 +104,10 @@ class TaskLog:
         finally:
             db.close()
 
-    def list_events_after(self, task_id: str, sequence: int) -> List[TaskEventDTO]:
-        db: Session = get_session()
+    def list_events_after(
+        self, project_id: str, task_id: str, sequence: int
+    ) -> List[TaskEventDTO]:
+        db: Session = get_project_session(project_id)
         try:
             rows = (
                 db.query(TaskEvent)
@@ -132,8 +119,10 @@ class TaskLog:
         finally:
             db.close()
 
-    def latest_of_type(self, task_id: str, event_type: EventType) -> Optional[TaskEventDTO]:
-        db: Session = get_session()
+    def latest_of_type(
+        self, project_id: str, task_id: str, event_type: EventType
+    ) -> Optional[TaskEventDTO]:
+        db: Session = get_project_session(project_id)
         try:
             row = (
                 db.query(TaskEvent)
@@ -148,14 +137,8 @@ class TaskLog:
         finally:
             db.close()
 
-    def nemotron_view(self, task_id: str) -> List[TaskEventDTO]:
-        """Filtered view Nemotron sees during its tool loop.
-
-        v1: return the full log. Compaction replaces ranges with LOG_COMPACTED
-        summaries later. The contract is: callers get an ordered list they
-        can feed into Nemotron's context without size management concerns.
-        """
-        return self.list_events(task_id)
+    def nemotron_view(self, project_id: str, task_id: str) -> List[TaskEventDTO]:
+        return self.list_events(project_id, task_id)
 
     # ------------------------------------------------------------------
     # Subscribe path (SSE)
@@ -176,14 +159,12 @@ class TaskLog:
                 del self._subscribers[task_id]
 
     def _fanout(self, task_id: str, dto: TaskEventDTO) -> None:
-        """Push a freshly-written event to every subscriber on this task."""
         with self._lock:
             queues = list(self._subscribers.get(task_id, []))
         for q in queues:
             try:
                 q.put_nowait(dto)
             except asyncio.QueueFull:
-                # Shouldn't happen with unbounded queues; guard anyway.
                 logger.warning("Subscriber queue full for task %s", task_id)
 
 

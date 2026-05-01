@@ -13,7 +13,7 @@ import logging
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from app.core.database import get_session, DiscoverySession
+from app.core.database import get_project_session, DiscoverySession
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +31,9 @@ MOCK_SMILES: List[Dict[str, str]] = [
 ]
 
 
-def _load_session_params(session_id: str) -> Dict[str, Any]:
-    """Load ProjectTargetParams from the DiscoverySession row."""
-    db = get_session()
+def _load_session_params(project_id: str, session_id: str) -> Dict[str, Any]:
+    """Load ProjectTargetParams from the per-project DiscoverySession row."""
+    db = get_project_session(project_id)
     try:
         row = db.query(DiscoverySession).filter(DiscoverySession.id == session_id).first()
         if not row:
@@ -70,7 +70,10 @@ async def generate_candidates(
     await asyncio.sleep(0)  # yield control
 
     try:
-        params = _load_session_params(session_id)
+        if not project_id:
+            yield _sse({"type": "error", "message": "project_id is required"})
+            return
+        params = _load_session_params(project_id, session_id)
     except ValueError as exc:
         yield _sse({"type": "error", "message": str(exc)})
         return
@@ -254,6 +257,7 @@ def _passes_all_constraints(
 
 
 async def screen_candidates(
+    project_id: str,
     session_id: str,
     epoch_id: str,
     smiles_list: List[str],
@@ -274,7 +278,10 @@ async def screen_candidates(
 
     # Load constraints from session
     try:
-        params = _load_session_params(session_id)
+        if not project_id:
+            yield _sse({"type": "error", "message": "project_id is required"})
+            return
+        params = _load_session_params(project_id, session_id)
     except ValueError as exc:
         yield _sse({"type": "error", "message": str(exc)})
         return

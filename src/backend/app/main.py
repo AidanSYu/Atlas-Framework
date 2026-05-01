@@ -13,13 +13,14 @@ from app.api.task_routes import router as task_router
 from app.atlas_plugin_system import get_tool_catalog
 from app.api.framework_routes import router as framework_router
 from app.core.config import settings
-from app.core.database import init_db
+from app.core import registry
 
 logger = logging.getLogger(__name__)
 
-# Initialize database on startup - FATAL on failure
-init_db()
-logger.info("SQLite database initialized successfully")
+# Per-project DBs are created lazily on first project creation; the only
+# app-level state we need at boot is the project registry file.
+registry.init_registry()
+logger.info("Project registry initialized at %s", registry.registry_path())
 
 
 app = FastAPI(

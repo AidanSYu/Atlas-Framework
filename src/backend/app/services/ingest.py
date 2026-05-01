@@ -33,10 +33,16 @@ except ImportError:
 
 from sqlalchemy.orm import Session
 
-from app.core.database import get_session, Node, Edge, Document, DocumentChunk
+from app.core.database import (
+    Document,
+    DocumentChunk,
+    Edge,
+    Node,
+    get_project_session,
+)
 from app.core.config import settings
 from app.services.llm import LLMService
-from app.core.qdrant_store import get_qdrant_client
+from app.core.qdrant_store import PROJECT_QDRANT_COLLECTION, get_qdrant_client
 from app.services.docling_parser import DoclingParser
 from app.services.semantic_chunker import SemanticChunker
 from app.services.raptor import RaptorService
@@ -56,9 +62,9 @@ class IngestionService:
     def __init__(self):
         self.llm_service = LLMService.get_instance()
 
-        # Embedded Qdrant - shared singleton (no server needed)
-        self.qdrant_client = get_qdrant_client()
-        self.collection_name = settings.QDRANT_COLLECTION
+        # Per-project Qdrant client + collection are resolved at method-call time
+        # because IngestionService is a process-wide singleton.
+        self.collection_name = PROJECT_QDRANT_COLLECTION
 
         # Thread pool for CPU-bound operations (PDF parsing, etc.)
         self.executor = ThreadPoolExecutor(max_workers=4)
@@ -139,15 +145,15 @@ class IngestionService:
             logger.error(f"GLiNER entity extraction unavailable: {e}")
             return None
 
-    async def _ensure_collection(self):
-        """Create Qdrant collection if it doesn't exist."""
-        collections = self.qdrant_client.get_collections().collections
+    async def _ensure_collection(self, qdrant_client):
+        """Create the Qdrant collection if it doesn't already exist in this project's storage."""
+        collections = qdrant_client.get_collections().collections
         collection_names = [c.name for c in collections]
 
         if self.collection_name not in collection_names:
             dimension = self.llm_service.embedding_dimension
             logger.info(f"Creating Qdrant collection with dimension {dimension}")
-            self.qdrant_client.create_collection(
+            qdrant_client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=dimension, distance=Distance.COSINE),
             )
@@ -186,7 +192,7 @@ class IngestionService:
             return ('unknown', 'text/plain')
 
     async def ingest_document(
-        self, file_path: str, filename: str, project_id: Optional[str] = None, predefined_doc_id: Optional[str] = None
+        self, file_path: str, filename: str, project_id: str, predefined_doc_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Main ingestion pipeline.
@@ -194,13 +200,16 @@ class IngestionService:
         Args:
             file_path: Path to the document file
             filename: Original filename
-            project_id: Optional project to scope this document to
+            project_id: Project to scope this document to (required)
             predefined_doc_id: Optional pre-generated doc_id from frontend routing
 
         Returns:
             Summary of ingestion with statistics
         """
-        session = get_session()
+        if not project_id:
+            raise ValueError("project_id is required for ingestion")
+        qdrant_client = get_qdrant_client(project_id)
+        session = get_project_session(project_id)
         doc_id = None
         document = None
         start_time = time.time()
@@ -315,7 +324,7 @@ class IngestionService:
             logger.info(f"Stored {len(chunks)} chunks in SQLite")
 
             # 5. Ensure Qdrant collection exists
-            await self._ensure_collection()
+            await self._ensure_collection(qdrant_client)
 
             # 6. Extract entities and create graph nodes
             t0_entities = time.perf_counter()
@@ -386,7 +395,7 @@ class IngestionService:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
                     self.executor,
-                    lambda: self.qdrant_client.upsert(
+                    lambda: qdrant_client.upsert(
                         collection_name=self.collection_name, points=all_points
                     ),
                 )

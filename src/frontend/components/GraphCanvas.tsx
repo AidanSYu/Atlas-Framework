@@ -10,7 +10,7 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false 
 interface GraphCanvasProps {
   height: number;
   width: number;
-  projectId?: string;
+  projectId: string;
 }
 
 type NodeData = { id: string; name: string; type: string; color: string; properties?: Record<string, any> };
@@ -28,7 +28,7 @@ export default function GraphCanvas({ height, width, projectId }: GraphCanvasPro
     try {
       setLoading(true);
       // Use /graph/full endpoint to get both nodes and edges at once
-      const graphData = await api.getFullGraph(undefined, projectId);
+      const graphData = await api.getFullGraph(projectId);
       
       const newNodes: NodeData[] = graphData.nodes.map(e => ({
         id: e.id,
@@ -52,7 +52,7 @@ export default function GraphCanvas({ height, width, projectId }: GraphCanvasPro
       console.error('Failed to load graph:', error);
       // Fallback to just loading nodes if full graph fails
       try {
-        const ents: EntityInfo[] = await api.listEntities({ limit: 100, project_id: projectId });
+        const ents: EntityInfo[] = await api.listEntities({ project_id: projectId, limit: 100 });
         const newNodes: NodeData[] = ents.map(e => ({
           id: e.id,
           name: e.name,
@@ -99,7 +99,7 @@ export default function GraphCanvas({ height, width, projectId }: GraphCanvasPro
     // Use functional updates to avoid dependency on nodes/links state
     (async () => {
       try {
-        const rels: RelationshipInfo[] = await api.getEntityRelationships(node.id, 'both');
+        const rels: RelationshipInfo[] = await api.getEntityRelationships(node.id, projectId, 'both');
         
         setNodes(prevNodes => {
           const existingIds = new Set(prevNodes.map(n => n.id));
@@ -176,7 +176,7 @@ export default function GraphCanvas({ height, width, projectId }: GraphCanvasPro
         console.error('Failed to expand relationships', e);
       }
     })();
-  }, []); // Remove nodes dependency to prevent graph reset
+  }, [projectId]); // Remove nodes dependency to prevent graph reset
 
   if (loading) {
     return (

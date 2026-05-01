@@ -81,12 +81,12 @@ export default function PDFViewer({
 
   // Fetch paper structure when sidebar is opened
   useEffect(() => {
-    if (!sidebarOpen || !docId || structure?.doc_id === docId) return;
+    if (!sidebarOpen || !docId || !projectId || structure?.doc_id === docId) return;
 
     let cancelled = false;
     setStructureLoading(true);
 
-    api.getDocumentStructure(docId)
+    api.getDocumentStructure(docId, projectId)
       .then((data) => {
         if (!cancelled) setStructure(data);
       })
@@ -98,7 +98,7 @@ export default function PDFViewer({
       });
 
     return () => { cancelled = true; };
-  }, [sidebarOpen, docId, structure?.doc_id]);
+  }, [sidebarOpen, docId, projectId, structure?.doc_id]);
 
   // Listen for text selection in the PDF viewer
   useEffect(() => {
@@ -131,7 +131,7 @@ export default function PDFViewer({
 
   // Find related passages when text is selected
   const handleFindRelated = useCallback(async () => {
-    if (!selectedText || !docId) return;
+    if (!selectedText || !docId || !projectId) return;
     setRelatedLoading(true);
     try {
       const passages = await api.getRelatedPassages(docId, selectedText, projectId, 5);

@@ -3,44 +3,20 @@ Domain-agnostic tool services for the Discovery OS Golden Path.
 
 Provides:
 - Molecular / entity rendering (RDKit where available, SVG fallback otherwise)
-- Capability gap storage and resolution
+- Capability gap storage and resolution (per-project)
 """
 import uuid
 import logging
 from pathlib import Path
 from urllib.parse import urlparse
-from typing import Optional, Literal
+from typing import Literal, Optional
 
-from app.core.database import get_session, get_engine, Base
-from sqlalchemy import Column, String, Integer, JSON, DateTime, Text
 from datetime import datetime
 
+# CapabilityGapRecord lives on ProjectBase; capability gaps are project-scoped.
+from app.core.database import CapabilityGapRecord, get_project_session
+
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Database model for capability gaps (lightweight, self-contained table)
-# ---------------------------------------------------------------------------
-
-class CapabilityGapRecord(Base):
-    __tablename__ = "capability_gaps"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    run_id = Column(String, nullable=False)
-    stage = Column(Integer, nullable=False)
-    required_function = Column(Text, nullable=False)
-    input_schema = Column(JSON, nullable=False, default=dict)
-    output_schema = Column(JSON, nullable=False, default=dict)
-    standard_reference = Column(Text, nullable=True)
-    resolution_method = Column(String, nullable=True)
-    resolution_config = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    resolved_at = Column(DateTime, nullable=True)
-
-
-def ensure_capability_gap_table():
-    """Create the capability_gaps table if it doesn't exist yet."""
-    engine = get_engine()
-    CapabilityGapRecord.__table__.create(bind=engine, checkfirst=True)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +75,7 @@ def _placeholder_svg(label: str, w: int, h: int) -> str:
 # ---------------------------------------------------------------------------
 
 def create_capability_gap(
+    project_id: str,
     run_id: str,
     stage: int,
     required_function: str,
@@ -106,10 +83,9 @@ def create_capability_gap(
     output_schema: dict,
     standard_reference: Optional[str] = None,
 ) -> str:
-    """Persist a new capability gap record. Returns the gap_id."""
-    ensure_capability_gap_table()
+    """Persist a new capability gap record in this project. Returns the gap_id."""
     gap_id = str(uuid.uuid4())
-    session = get_session()
+    session = get_project_session(project_id)
     try:
         record = CapabilityGapRecord(
             id=gap_id,
@@ -131,6 +107,7 @@ def create_capability_gap(
 
 
 def resolve_capability_gap(
+    project_id: str,
     gap_id: str,
     method: Literal["local_script", "api_endpoint", "plugin", "skip"],
     config: dict,
@@ -147,8 +124,7 @@ def resolve_capability_gap(
         if not parsed.scheme or not parsed.netloc:
             raise ValueError(f"Invalid URL: {url}")
 
-    ensure_capability_gap_table()
-    session = get_session()
+    session = get_project_session(project_id)
     try:
         record = session.query(CapabilityGapRecord).filter_by(id=gap_id).first()
         if record is None:

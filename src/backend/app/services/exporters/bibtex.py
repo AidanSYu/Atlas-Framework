@@ -8,7 +8,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from app.core.database import Document, get_session
+from app.core.database import Document, get_project_session
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +32,10 @@ class BibTeXExporter:
 
     def export_project(self, project_id: str) -> str:
         """Export all documents in a project as a .bib file."""
-        session = get_session()
+        session = get_project_session(project_id)
         try:
             documents = (
                 session.query(Document)
-                .filter(Document.project_id == project_id)
                 .order_by(Document.uploaded_at.desc())
                 .all()
             )
@@ -49,9 +48,9 @@ class BibTeXExporter:
         finally:
             session.close()
 
-    def export_documents(self, doc_ids: List[str]) -> str:
+    def export_documents(self, project_id: str, doc_ids: List[str]) -> str:
         """Export specific documents as BibTeX entries."""
-        session = get_session()
+        session = get_project_session(project_id)
         try:
             documents = (
                 session.query(Document)

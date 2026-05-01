@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from pydantic import BaseModel, Field
 from fastapi import HTTPException
-from app.core.database import get_session, Document, DiscoverySession
+from app.core.database import get_project_session, Document, DiscoverySession
 from app.core.config import settings
 
 import logging
@@ -34,7 +34,9 @@ class DiscoverySessionService:
 
     @staticmethod
     def initialize_session(params: ProjectTargetParams) -> Dict[str, Any]:
-        session = get_session()
+        if not params.projectId:
+            raise HTTPException(status_code=400, detail="projectId is required")
+        session = get_project_session(params.projectId)
         try:
             # Validate corpusDocumentIds
             if params.corpusDocumentIds:
@@ -90,13 +92,13 @@ class DiscoverySessionService:
             session.close()
 
     @staticmethod
-    def get_sessions(project_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List discovery sessions from database, optionally filtered by project."""
-        session = get_session()
+    def get_sessions(project_id: str) -> List[Dict[str, Any]]:
+        """List discovery sessions for a project."""
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id is required")
+        session = get_project_session(project_id)
         try:
             query = session.query(DiscoverySession).order_by(DiscoverySession.created_at.desc())
-            if project_id:
-                query = query.filter(DiscoverySession.project_id == project_id)
             db_sessions = query.all()
 
             result = []
@@ -125,14 +127,12 @@ class DiscoverySessionService:
             session.close()
 
     @staticmethod
-    def get_session_files(session_id: str) -> List[Dict[str, Any]]:
-        """List all files in a discovery session folder (root + generated/).
-
-        Returns files sorted with root-level docs first, then generated scripts.
-        """
+    def get_session_files(project_id: str, session_id: str) -> List[Dict[str, Any]]:
+        """List all files in a discovery session folder (root + generated/)."""
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id is required")
         try:
-            # Check if session exists in database
-            session = get_session()
+            session = get_project_session(project_id)
             db_session = session.query(DiscoverySession).filter(DiscoverySession.id == session_id).first()
             session.close()
 
@@ -174,9 +174,13 @@ class DiscoverySessionService:
             raise HTTPException(status_code=500, detail=f"Error listing session files: {str(e)}")
 
     @staticmethod
-    def update_coordinator_goals(session_id: str, extracted_goals: List[str]) -> Dict[str, Any]:
+    def update_coordinator_goals(
+        project_id: str, session_id: str, extracted_goals: List[str]
+    ) -> Dict[str, Any]:
         """Update DiscoverySession with coordinator-extracted goals."""
-        session = get_session()
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id is required")
+        session = get_project_session(project_id)
         try:
             db_session = session.query(DiscoverySession).filter(DiscoverySession.id == session_id).first()
             if not db_session:

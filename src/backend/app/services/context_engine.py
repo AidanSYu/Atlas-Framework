@@ -1,26 +1,22 @@
-"""
-Context Engine - Proactive context-aware retrieval service.
-
-Phase 4, Task 4.4: Receives user's current context (selected text,
-active document, current page) and returns relevant passages,
-connected concepts, and suggestions from the knowledge graph.
-"""
+"""Context Engine — proactive context-aware retrieval (per-project)."""
 from typing import Any, Dict, List, Optional
 import logging
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
 
-from app.core.database import get_session, Document, DocumentChunk, Node, Edge
-from app.core.config import settings
+from app.core.database import (
+    Document,
+    DocumentChunk,
+    Node,
+    get_project_session,
+)
+from app.core.qdrant_store import PROJECT_QDRANT_COLLECTION, get_qdrant_client
 from app.services.llm import LLMService
-from app.core.qdrant_store import get_qdrant_client
 from app.services.rerank import get_rerank_service
 from qdrant_client.models import Filter, FieldCondition, MatchValue, SearchParams
 
 logger = logging.getLogger(__name__)
 
-# Patterns that indicate Docling/internal Python repr rather than readable prose
 _REPR_PATTERNS = (
     "RefItem(",
     "ContentLayer.",
@@ -42,18 +38,13 @@ def _sanitize_passage_text(text: str) -> str:
 
 
 class ContextEngineService:
-    """Proactive context-aware retrieval.
-
-    Accepts a "context snapshot" from the frontend and returns relevant
-    passages, connected entities, and suggestions.
-    """
+    """Proactive context-aware retrieval, scoped per project."""
 
     def __init__(self):
         self.llm_service = LLMService.get_instance()
-        self.qdrant_client = get_qdrant_client()
-        self.collection_name = settings.QDRANT_COLLECTION
+        self.collection_name = PROJECT_QDRANT_COLLECTION
         self.reranker = get_rerank_service()
-        # Cache: keyed by (doc_id, page_number) -> related passages result
+        # Cache: keyed by (project_id, doc_id, page_number)
         self._related_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._concepts_cache: Dict[str, List[Dict[str, Any]]] = {}
         logger.info("ContextEngineService initialized")
@@ -62,12 +53,10 @@ class ContextEngineService:
     # Public API
     # ------------------------------------------------------------------
 
-    async def get_document_structure(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        """Get extracted paper structure (title, authors, methods, findings).
-
-        Returns the doc_metadata field from the Document record.
-        """
-        session = get_session()
+    async def get_document_structure(
+        self, project_id: str, doc_id: str
+    ) -> Optional[Dict[str, Any]]:
+        session = get_project_session(project_id)
         try:
             document = session.query(Document).filter(Document.id == doc_id).first()
             if not document:
@@ -95,59 +84,52 @@ class ContextEngineService:
         finally:
             session.close()
 
-    def _document_exists(self, doc_id: str) -> bool:
-        """Return True if the document still exists in the database."""
-        session = get_session()
+    def _document_exists(self, project_id: str, doc_id: str) -> bool:
+        session = get_project_session(project_id)
         try:
             return session.query(Document).filter(Document.id == doc_id).first() is not None
         finally:
             session.close()
 
-    def _collection_exists(self) -> bool:
-        """Check whether the Qdrant collection has been created yet."""
+    def _collection_exists(self, project_id: str) -> bool:
         try:
-            names = [c.name for c in self.qdrant_client.get_collections().collections]
+            qdrant_client = get_qdrant_client(project_id)
+            names = [c.name for c in qdrant_client.get_collections().collections]
             return self.collection_name in names
         except Exception:
             return False
 
     async def get_related_passages(
         self,
+        project_id: str,
         doc_id: str,
         text: str,
-        project_id: Optional[str] = None,
         limit: int = 8,
     ) -> List[Dict[str, Any]]:
-        """Find passages in OTHER documents related to the given text.
-
-        Embeds the input text and searches Qdrant, excluding chunks
-        from the specified document.
-        """
-        if not doc_id or not self._document_exists(doc_id):
+        """Find passages in OTHER documents related to the given text."""
+        if not doc_id or not self._document_exists(project_id, doc_id):
             return []
 
-        # Guard: collection may not exist if no documents have been fully ingested yet
-        if not self._collection_exists():
+        if not self._collection_exists(project_id):
             return []
 
-        # Skip proactive embedding generation if LLM is actively streaming
         if getattr(self.llm_service, "is_generating", False):
             logger.info("Skipping background embedding request due to active LLM generation loop.")
             return []
 
         embedding = await self.llm_service.embed(text)
 
-        # Build filter to exclude the source document
         must_not = [FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
         search_filter = Filter(must_not=must_not)
 
         try:
-            results = self.qdrant_client.query_points(
+            qdrant_client = get_qdrant_client(project_id)
+            results = qdrant_client.query_points(
                 collection_name=self.collection_name,
                 query=embedding,
                 query_filter=search_filter,
-                limit=limit * 2,  # Fetch extra for reranking
-                search_params=SearchParams(exact=True),  # Exact search for deterministic results
+                limit=limit * 2,
+                search_params=SearchParams(exact=True),
             ).points
         except Exception as e:
             logger.warning(f"Qdrant query failed (collection may be empty): {e}")
@@ -187,17 +169,16 @@ class ContextEngineService:
         for p in passages:
             score = p.get("score", 0.0)
             is_reranked = "rerank_score" in p
-            
+
             if is_reranked:
-                if score < 0.01:  # FlashRank can be very strict
+                if score < 0.01:
                     continue
             else:
-                if score < 0.25:  # Qdrant cosine similarity threshold
+                if score < 0.25:
                     continue
-                # Normalize Qdrant range to roughly 0.0-1.0
                 score = max(0.0, min(1.0, (score - 0.25) * 2.0))
                 p["score"] = score
-                
+
             filtered_passages.append(p)
 
         return filtered_passages
@@ -209,10 +190,6 @@ class ContextEngineService:
         current_doc_id: Optional[str] = None,
         current_page: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Return context-aware suggestions based on user's current focus.
-
-        Combines related passages, connected entities, and AI suggestions.
-        """
         results: Dict[str, Any] = {
             "related_passages": [],
             "connected_concepts": [],
@@ -220,41 +197,39 @@ class ContextEngineService:
         }
 
         if selected_text and len(selected_text.strip()) > 10:
-            if current_doc_id and self._document_exists(current_doc_id):
+            if current_doc_id and self._document_exists(project_id, current_doc_id):
                 results["related_passages"] = await self.get_related_passages(
+                    project_id=project_id,
                     doc_id=current_doc_id,
                     text=selected_text,
-                    project_id=project_id,
                     limit=5,
                 )
             results["connected_concepts"] = await self._find_connected_entities(
-                selected_text, project_id
+                project_id, selected_text
             )
 
         elif current_doc_id and current_page:
-            # Use cache for page-level context to ensure deterministic results
-            cache_key = f"{current_doc_id}:{current_page}"
+            cache_key = f"{project_id}:{current_doc_id}:{current_page}"
             if cache_key in self._related_cache:
                 results["related_passages"] = self._related_cache[cache_key]
                 results["connected_concepts"] = self._concepts_cache.get(cache_key, [])
                 return results
 
-            if not self._document_exists(current_doc_id):
+            if not self._document_exists(project_id, current_doc_id):
                 return results
-            page_text = await self._get_page_text(current_doc_id, current_page)
+            page_text = await self._get_page_text(project_id, current_doc_id, current_page)
             if page_text:
                 related = await self.get_related_passages(
+                    project_id=project_id,
                     doc_id=current_doc_id,
                     text=page_text[:500],
-                    project_id=project_id,
                     limit=3,
                 )
                 concepts = await self._find_connected_entities(
-                    page_text[:500], project_id
+                    project_id, page_text[:500]
                 )
                 results["related_passages"] = related
                 results["connected_concepts"] = concepts
-                # Store in cache (simple dict; entries evicted on service restart)
                 self._related_cache[cache_key] = related
                 self._concepts_cache[cache_key] = concepts
 
@@ -262,12 +237,12 @@ class ContextEngineService:
 
     async def get_document_chunks(
         self,
+        project_id: str,
         doc_id: str,
         page_number: Optional[int] = None,
         limit: int = 50,
     ) -> List[Dict[str, Any]]:
-        """Get chunks for a document, optionally filtered by page."""
-        session = get_session()
+        session = get_project_session(project_id)
         try:
             query = session.query(DocumentChunk).filter(
                 DocumentChunk.document_id == doc_id
@@ -298,12 +273,10 @@ class ContextEngineService:
     # ------------------------------------------------------------------
 
     async def _find_connected_entities(
-        self, text: str, project_id: str, limit: int = 10
+        self, project_id: str, text: str, limit: int = 10
     ) -> List[Dict[str, Any]]:
-        """Find entities in the knowledge graph related to the given text."""
-        session = get_session()
+        session = get_project_session(project_id)
         try:
-            # Simple keyword matching: extract words > 3 chars and search nodes
             words = sorted(set(
                 w.lower()
                 for w in text.split()
@@ -313,20 +286,15 @@ class ContextEngineService:
             if not words:
                 return []
 
-            # Search for nodes whose name matches any keyword
-            node_query = session.query(Node).filter(
-                Node.project_id == project_id
-            )
+            node_query = session.query(Node)
 
             matching_nodes = []
-            # Use SQL-level filtering for efficiency
-            for word in list(words)[:15]:  # Cap at 15 keywords
+            for word in list(words)[:15]:
                 nodes = node_query.filter(
                     func.lower(func.json_extract(Node.properties, "$.name")).contains(word)
                 ).limit(5).all()
                 matching_nodes.extend(nodes)
 
-            # Deduplicate
             seen_ids = set()
             unique_nodes = []
             for node in matching_nodes:
@@ -345,9 +313,10 @@ class ContextEngineService:
         finally:
             session.close()
 
-    async def _get_page_text(self, doc_id: str, page_number: int) -> Optional[str]:
-        """Get concatenated text from all chunks on a given page."""
-        session = get_session()
+    async def _get_page_text(
+        self, project_id: str, doc_id: str, page_number: int
+    ) -> Optional[str]:
+        session = get_project_session(project_id)
         try:
             chunks = (
                 session.query(DocumentChunk)

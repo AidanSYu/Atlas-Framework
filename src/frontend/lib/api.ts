@@ -742,6 +742,22 @@ export const api = {
     return handleResponse(response);
   },
 
+  /**
+   * Register an existing project folder on disk with the app — VSCode "open
+   * folder" semantics. The folder must already contain a workspace.json.
+   */
+  async registerWorkspace(folderPath: string): Promise<ProjectInfo> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/workspaces/register`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: folderPath }),
+      },
+    );
+    return handleResponse(response);
+  },
+
   // ---- Task Runtime (two-tier orchestration: DeepSeek + Nemotron) ----
 
   async createTask(params: {
@@ -860,36 +876,30 @@ export const api = {
 
   // ---- File Management ----
 
-  async uploadFile(file: File, projectId?: string): Promise<any> {
+  async uploadFile(file: File, projectId: string): Promise<any> {
     const formData = new FormData();
     formData.append('file', file);
-    const url = projectId
-      ? `${API_BASE_URL}/ingest?project_id=${encodeURIComponent(projectId)}`
-      : `${API_BASE_URL}/ingest`;
+    const url = `${API_BASE_URL}/ingest?project_id=${encodeURIComponent(projectId)}`;
     const response = await fetchWithTimeout(url, { method: 'POST', body: formData });
     return handleResponse(response);
   },
 
-  async listFiles(projectId?: string): Promise<FileInfo[]> {
-    const params = new URLSearchParams();
-    if (projectId) params.append('project_id', projectId);
-    const url = params.toString()
-      ? `${API_BASE_URL}/files?${params.toString()}`
-      : `${API_BASE_URL}/files`;
+  async listFiles(projectId: string): Promise<FileInfo[]> {
+    const url = `${API_BASE_URL}/files?project_id=${encodeURIComponent(projectId)}`;
     const response = await fetchWithTimeout(url);
     return handleResponse(response);
   },
 
-  async deleteFile(docId: string): Promise<any> {
+  async deleteFile(docId: string, projectId: string): Promise<any> {
     const response = await fetchWithTimeout(
-      `${API_BASE_URL}/files/${encodeURIComponent(docId)}`,
+      `${API_BASE_URL}/files/${encodeURIComponent(docId)}?project_id=${encodeURIComponent(projectId)}`,
       { method: 'DELETE' }
     );
     return handleResponse(response);
   },
 
-  getFileUrl(docId: string): string {
-    return `${API_BASE_URL}/files/${encodeURIComponent(docId)}`;
+  getFileUrl(docId: string, projectId: string): string {
+    return `${API_BASE_URL}/files/${encodeURIComponent(docId)}?project_id=${encodeURIComponent(projectId)}`;
   },
 
   // ---- Grounded Chat (Librarian / Cortex) ----
@@ -1008,49 +1018,50 @@ export const api = {
 
   // ---- Entities & Graph ----
 
-  async listEntities(params?: {
+  async listEntities(params: {
+    project_id: string;
     entity_type?: string;
     document_id?: string;
-    project_id?: string;
     limit?: number;
   }): Promise<EntityInfo[]> {
-    const q = new URLSearchParams();
-    if (params?.entity_type) q.append('entity_type', params.entity_type);
-    if (params?.document_id) q.append('document_id', params.document_id);
-    if (params?.project_id) q.append('project_id', params.project_id);
-    q.append('limit', String(params?.limit ?? 50));
+    const q = new URLSearchParams({ project_id: params.project_id });
+    if (params.entity_type) q.append('entity_type', params.entity_type);
+    if (params.document_id) q.append('document_id', params.document_id);
+    q.append('limit', String(params.limit ?? 50));
     const response = await fetchWithTimeout(`${API_BASE_URL}/entities?${q.toString()}`);
     return handleResponse(response);
   },
 
   async getEntityRelationships(
     entityId: string,
+    projectId: string,
     direction: 'outgoing' | 'incoming' | 'both' = 'both'
   ): Promise<RelationshipInfo[]> {
+    const params = new URLSearchParams({
+      project_id: projectId,
+      direction,
+    });
     const response = await fetchWithTimeout(
-      `${API_BASE_URL}/entities/${encodeURIComponent(entityId)}/relationships?direction=${direction}`
+      `${API_BASE_URL}/entities/${encodeURIComponent(entityId)}/relationships?${params.toString()}`
     );
     return handleResponse(response);
   },
 
-  async getEntityTypes(projectId?: string): Promise<Array<{ type: string; count: number }>> {
-    const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
-    const response = await fetchWithTimeout(`${API_BASE_URL}/graph/types${params}`);
+  async getEntityTypes(projectId: string): Promise<Array<{ type: string; count: number }>> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/graph/types?project_id=${encodeURIComponent(projectId)}`
+    );
     const data = await handleResponse<{ entity_types: Array<{ type: string; count: number }> }>(response);
     return data.entity_types;
   },
 
   async getFullGraph(
-    documentId?: string,
-    projectId?: string
+    projectId: string,
+    documentId?: string
   ): Promise<{ nodes: EntityInfo[]; edges: RelationshipInfo[] }> {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ project_id: projectId });
     if (documentId) params.append('document_id', documentId);
-    if (projectId) params.append('project_id', projectId);
-    const url = params.toString()
-      ? `${API_BASE_URL}/graph/full?${params.toString()}`
-      : `${API_BASE_URL}/graph/full`;
-    const response = await fetchWithTimeout(url);
+    const response = await fetchWithTimeout(`${API_BASE_URL}/graph/full?${params.toString()}`);
     return handleResponse(response);
   },
 
@@ -1115,9 +1126,9 @@ export const api = {
 
   // ---- Context Engine (Phase 4) ----
 
-  async getDocumentStructure(docId: string): Promise<DocumentStructureResponse> {
+  async getDocumentStructure(docId: string, projectId: string): Promise<DocumentStructureResponse> {
     const response = await fetchWithTimeout(
-      `${API_BASE_URL}/files/${encodeURIComponent(docId)}/structure`
+      `${API_BASE_URL}/files/${encodeURIComponent(docId)}/structure?project_id=${encodeURIComponent(projectId)}`
     );
     return handleResponse(response);
   },
@@ -1125,11 +1136,14 @@ export const api = {
   async getRelatedPassages(
     docId: string,
     text: string,
-    projectId?: string,
+    projectId: string,
     limit: number = 8
   ): Promise<RelatedPassage[]> {
-    const params = new URLSearchParams({ text, limit: String(limit) });
-    if (projectId) params.append('project_id', projectId);
+    const params = new URLSearchParams({
+      project_id: projectId,
+      text,
+      limit: String(limit),
+    });
     const response = await fetchWithTimeout(
       `${API_BASE_URL}/files/${encodeURIComponent(docId)}/related?${params.toString()}`
     );
@@ -1138,10 +1152,14 @@ export const api = {
 
   async getDocumentChunks(
     docId: string,
+    projectId: string,
     page?: number,
     limit: number = 50
   ): Promise<DocumentChunk[]> {
-    const params = new URLSearchParams({ limit: String(limit) });
+    const params = new URLSearchParams({
+      project_id: projectId,
+      limit: String(limit),
+    });
     if (page !== undefined) params.append('page', String(page));
     const response = await fetchWithTimeout(
       `${API_BASE_URL}/files/${encodeURIComponent(docId)}/chunks?${params.toString()}`

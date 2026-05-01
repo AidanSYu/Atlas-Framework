@@ -26,6 +26,18 @@ tokio = { version = "1", features = ["full"] }
 log = "0.4"
 env_logger = "0.10"
 reqwest = { version = "0.11", features = ["json"] }
+
+# H16 — Windows Job Object support so closing the parent kills the entire
+# Python sidecar process tree atomically (uvicorn workers, llama-cpp helper,
+# anything else the backend spawned). Already a transitive dep of Tauri on
+# Windows; declared here explicitly so the Job Object handles compile.
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+    "handleapi",
+    "jobapi2",
+    "processthreadsapi",
+    "winnt",
+] }
 # Pin so idna_adapter's icu_properties matches icu_provider 2.1.1 (avoids 696 compile errors in icu_properties 2.1.2).
 icu_properties = "=2.1.1"
 # Pin data to match; 2.1.2 pulls in types icu_properties 2.1.1 doesn't expect (undeclared type errors).

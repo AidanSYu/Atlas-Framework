@@ -11,8 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from app.core.database import Document, get_session
-from app.core.config import settings
+from app.core.database import Document, get_project_session
 from app.services.graph import GraphService
 from app.services.retrieval import RetrievalService
 
@@ -192,12 +191,10 @@ class QueryVectorDBTool:
         }
 
     @staticmethod
-    def _get_active_document_ids(project_id: Optional[str] = None) -> set[str]:
-        session = get_session()
+    def _get_active_document_ids(project_id: str) -> set[str]:
+        session = get_project_session(project_id)
         try:
             query = session.query(Document).filter(Document.status == "completed")
-            if project_id:
-                query = query.filter(Document.project_id == project_id)
             return {str(document.id) for document in query.all()}
         finally:
             session.close()
