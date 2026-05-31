@@ -607,6 +607,25 @@ class TaskService:
                 {"answer": candidate_answer},
             )
             self._set_terminal(project_id, task_id, "completed")
+            # Compounding moat: distill this completed campaign into one
+            # CampaignMemory row (plan skeleton, dead-ends, key facts) so a later
+            # related campaign can recall_prior_outcomes and skip what this run
+            # already settled. Non-fatal — memory must never break completion.
+            try:
+                from app.services.memory import MemoryService
+
+                MemoryService().consolidate_campaign(
+                    project_id=project_id,
+                    task_id=task_id,
+                    goal_statement=brief.goal_statement,
+                    outcome="completed",
+                    final_answer=candidate_answer,
+                    events=self._log.list_events(project_id, task_id),
+                )
+            except Exception:
+                logger.exception(
+                    "Campaign memory consolidation failed for task %s (non-fatal)", task_id
+                )
             return False
 
         if verdict.verdict == "revise":

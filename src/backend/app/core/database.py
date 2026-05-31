@@ -208,6 +208,45 @@ class TaskEvent(ProjectBase):
     )
 
 
+class CampaignMemory(ProjectBase):
+    """One row per completed campaign — the cross-campaign compounding store.
+
+    Written on task completion (see services.memory.MemoryService) and read back
+    by the recall_memory / recall_prior_outcomes core tools so a later campaign
+    reuses a prior plan skeleton and SKIPS the dead-ends an earlier one already
+    ruled out (the ARROWS3-style pruning that makes campaign N+1 reach a result
+    in fewer steps). Rows are unverified hypotheses (confidence flag) carrying
+    provenance, so bad data can be down-ranked / pruned, not compounded.
+    """
+
+    __tablename__ = "campaign_memory"
+
+    id = Column(String, primary_key=True, default=_generate_uuid)
+    project_id = Column(String, nullable=True, index=True)
+    task_id = Column(String, nullable=True, index=True)
+
+    goal_statement = Column(Text, nullable=False)
+    target = Column(String, nullable=True, index=True)
+
+    plan_skeleton = Column(JSON, nullable=False, default=list)   # ordered tool names
+    final_answer = Column(Text, nullable=True)
+    outcome = Column(String, nullable=False, default="completed")  # completed | failed | ...
+    key_facts = Column(JSON, nullable=False, default=list)
+    dead_ends = Column(JSON, nullable=False, default=list)         # [{action, reason}]
+    citations = Column(JSON, nullable=False, default=list)
+
+    confidence = Column(String, nullable=False, default="hypothesis")  # hypothesis | verified
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_accessed = Column(DateTime, default=datetime.utcnow, nullable=False)
+    access_count = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("idx_campaign_memory_project", "project_id"),
+        Index("idx_campaign_memory_target", "target"),
+        Index("idx_campaign_memory_created", "created_at"),
+    )
+
+
 # ============================================================
 # Engine + session lifecycle (per-project)
 # ============================================================

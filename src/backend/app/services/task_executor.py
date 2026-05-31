@@ -475,7 +475,7 @@ class TaskExecutor:
                         self._catalog.invoke(
                             tool_name,
                             tool_args if isinstance(tool_args, dict) else {},
-                            context={"task_id": brief.task_id},
+                            context={"task_id": brief.task_id, "project_id": brief.project_id},
                         ),
                         timeout=_TOOL_TIMEOUT_SECONDS,
                     )
@@ -548,13 +548,20 @@ class TaskExecutor:
                     projection_specs.get(tool_name),
                     _MAX_TOOL_OUTPUT_CHARS,
                 )
-                if was_compressed and not (projection_specs.get(tool_name) or {}).get("salient_fields"):
-                    logger.info(
-                        "Tool '%s' result compressed for model context (full payload in "
-                        "event log) — add 'to_model_projection' to its manifest for a "
-                        "sharper model-facing view.",
-                        tool_name,
+                if was_compressed:
+                    # Restorable offload: tell the model how to recover the full
+                    # result it can't see inline — the complete payload is in the
+                    # event log, fetchable via read_artifact by this call_id.
+                    model_view += (
+                        f'\n[result summarized — call read_artifact(artifact_id="{call_id}") '
+                        f"for all fields]"
                     )
+                    if not (projection_specs.get(tool_name) or {}).get("salient_fields"):
+                        logger.info(
+                            "Tool '%s' result compressed for model context — add "
+                            "'to_model_projection' to its manifest for a sharper view.",
+                            tool_name,
+                        )
                 tool_response_parts.append(model_view)
 
             # Feed results back in Nemotron's trained format. Every Nth turn we

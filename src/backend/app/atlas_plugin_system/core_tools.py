@@ -11,8 +11,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.database import Document, get_project_session
+from app.core.database import Document, TaskEvent, get_project_session
 from app.services.graph import GraphService
+from app.services.memory import MemoryService
 from app.services.retrieval import RetrievalService
 
 logger = logging.getLogger(__name__)
@@ -376,6 +377,140 @@ class WalkKnowledgeGraphTool:
         return visited, filtered_edges
 
 
+class RecallMemoryTool:
+    """Recall lessons from prior completed campaigns (cross-campaign memory)."""
+
+    def __init__(self) -> None:
+        self._service = MemoryService()
+
+    async def invoke(
+        self,
+        arguments: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = dict(arguments or {})
+        runtime = dict(context or {})
+        query = str(payload.get("query") or runtime.get("user_prompt") or "").strip()
+        project_id = payload.get("project_id") or runtime.get("project_id")
+        limit = max(1, min(int(payload.get("limit") or 5), 20))
+
+        if not project_id:
+            return {
+                "status": "error",
+                "summary": "recall_memory requires a project_id.",
+                "error": "missing_project_id",
+                "memories": [],
+            }
+
+        loop = asyncio.get_running_loop()
+        memories = await loop.run_in_executor(
+            None, lambda: self._service.recall(project_id=project_id, query=query, limit=limit)
+        )
+        if not memories:
+            return {
+                "status": "no_memories",
+                "summary": "No prior-campaign memories match this query yet.",
+                "memories": [],
+            }
+        top = memories[0]
+        summary = (
+            f"Recalled {len(memories)} prior-campaign memory(ies). Most relevant: "
+            f"\"{top['goal'][:80]}\" ({top.get('created_at') or '?'}). Treat as hypotheses."
+        )
+        return {"status": "success", "summary": summary, "memories": memories}
+
+
+class RecallPriorOutcomesTool:
+    """Recall prior plans + the dead-ends to skip for a related target."""
+
+    def __init__(self) -> None:
+        self._service = MemoryService()
+
+    async def invoke(
+        self,
+        arguments: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = dict(arguments or {})
+        runtime = dict(context or {})
+        target = str(
+            payload.get("target") or payload.get("query") or runtime.get("user_prompt") or ""
+        ).strip()
+        project_id = payload.get("project_id") or runtime.get("project_id")
+        limit = max(1, min(int(payload.get("limit") or 5), 20))
+
+        if not project_id:
+            return {
+                "status": "error",
+                "summary": "recall_prior_outcomes requires a project_id.",
+                "error": "missing_project_id",
+            }
+        if not target:
+            return {
+                "status": "error",
+                "summary": "recall_prior_outcomes requires a target.",
+                "error": "missing_target",
+            }
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._service.recall_prior_outcomes(
+                project_id=project_id, target=target, limit=limit
+            ),
+        )
+
+
+class ReadArtifactTool:
+    """Re-read the full payload of an earlier tool result that was projected
+    down for the model's context (restorable offload). The full result lives in
+    the task event log keyed by the tool call_id surfaced in the projection."""
+
+    async def invoke(
+        self,
+        arguments: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = dict(arguments or {})
+        runtime = dict(context or {})
+        project_id = payload.get("project_id") or runtime.get("project_id")
+        task_id = payload.get("task_id") or runtime.get("task_id")
+        ref = str(
+            payload.get("artifact_id") or payload.get("call_id") or payload.get("ref") or ""
+        ).strip()
+        if ref.startswith("artifact:"):
+            ref = ref[len("artifact:"):]
+
+        if not project_id or not ref:
+            return {
+                "status": "error",
+                "summary": "read_artifact requires project_id and an artifact_id.",
+                "error": "missing_args",
+            }
+
+        loop = asyncio.get_running_loop()
+        full = await loop.run_in_executor(None, self._fetch, project_id, task_id, ref)
+        if full is None:
+            return {"status": "not_found", "summary": f"No artifact found for id '{ref}'."}
+        return {"status": "success", "summary": f"Full payload for artifact '{ref}'.", "artifact": full}
+
+    @staticmethod
+    def _fetch(project_id: str, task_id: Optional[str], call_id: str) -> Optional[Any]:
+        session = get_project_session(project_id)
+        try:
+            query = session.query(TaskEvent).filter(
+                TaskEvent.event_type == "TOOL_EXECUTION_RESULT"
+            )
+            if task_id:
+                query = query.filter(TaskEvent.task_id == task_id)
+            for evt in query.order_by(TaskEvent.sequence.desc()).limit(300):
+                if (evt.payload or {}).get("call_id") == call_id:
+                    return (evt.payload or {}).get("output")
+            return None
+        finally:
+            session.close()
+
+
 class CoreToolRegistry:
     """Registry for Atlas' always-on knowledge substrate tools."""
 
@@ -567,6 +702,116 @@ class CoreToolRegistry:
                 },
             ),
             WalkKnowledgeGraphTool(),
+        )
+        self._register(
+            CoreToolManifest(
+                name="recall_prior_outcomes",
+                description=(
+                    "Recall what PRIOR campaigns on a related target already learned — reusable "
+                    "plan skeletons and the dead-ends to SKIP — before you start exploring. Call "
+                    "this early on any campaign so you don't re-derive facts or re-run chains a "
+                    "previous run already ruled out. Results are unverified hypotheses; cite them."
+                ),
+                priority=175,
+                tags=["memory", "compounding", "campaign", "core"],
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "The current target / goal to find related prior campaigns for.",
+                        },
+                        "project_id": {"type": "string", "description": "Optional project scope."},
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max prior campaigns to recall.",
+                            "minimum": 1,
+                            "maximum": 20,
+                        },
+                    },
+                    "required": ["target"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "prior_campaigns": {"type": "array", "items": {"type": "object"}},
+                        "dead_ends_to_skip": {"type": "array", "items": {"type": "object"}},
+                    },
+                },
+            ),
+            RecallPriorOutcomesTool(),
+        )
+        self._register(
+            CoreToolManifest(
+                name="recall_memory",
+                description=(
+                    "Recall lessons (key facts, outcomes) from prior completed campaigns by "
+                    "semantic relevance to a query. Use to avoid re-discovering what the lab "
+                    "already knows. Results are unverified hypotheses with provenance; cite them."
+                ),
+                priority=165,
+                tags=["memory", "recall", "core"],
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "What to recall from prior-campaign memory.",
+                        },
+                        "project_id": {"type": "string", "description": "Optional project scope."},
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max memories to recall.",
+                            "minimum": 1,
+                            "maximum": 20,
+                        },
+                    },
+                    "required": ["query"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "memories": {"type": "array", "items": {"type": "object"}},
+                    },
+                },
+            ),
+            RecallMemoryTool(),
+        )
+        self._register(
+            CoreToolManifest(
+                name="read_artifact",
+                description=(
+                    "Re-read the FULL result of an earlier tool call that was summarized for "
+                    "your context. Pass the artifact_id (the call ref shown in a truncated tool "
+                    "result) to retrieve every field you couldn't see inline."
+                ),
+                priority=90,
+                tags=["context", "offload", "core"],
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "artifact_id": {
+                            "type": "string",
+                            "description": "The call ref shown in a truncated/offloaded tool result.",
+                        },
+                        "project_id": {"type": "string", "description": "Optional project scope."},
+                    },
+                    "required": ["artifact_id"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "artifact": {"type": "object"},
+                    },
+                },
+            ),
+            ReadArtifactTool(),
         )
 
     def _register(self, manifest: CoreToolManifest, handler: Any) -> None:
