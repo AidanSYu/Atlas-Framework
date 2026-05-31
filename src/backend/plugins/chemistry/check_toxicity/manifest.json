@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "name": "check_toxicity",
   "version": "0.1.0",
-  "description": "Screen molecules for SMARTS structural alerts and PAINS patterns.",
+  "description": "Screen molecules for SMARTS structural alerts and PAINS patterns. Call AFTER standardize_smiles. If the molecule passes (no alerts, no PAINS hits), the natural next tool is predict_admet. If it fails, stop and report the structural liability — synthesizing a known toxicophore wastes reagent.",
   "entry_point": "wrapper.py",
   "priority": 58,
   "tags": ["chemistry", "toxicity", "rdkit"],

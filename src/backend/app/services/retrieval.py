@@ -94,38 +94,21 @@ If no dates/entities found, return empty arrays."""
     def _build_answer_prompt(
         user_question: str,
         context_str: str,
-        mode: str,
     ) -> tuple[str, str]:
-        if mode == "cortex":
-            system_msg = (
-                "You are Atlas Cortex, a grounded research analyst. Answer only from the "
-                "provided project context. In this chat mode you do not have access to "
-                "plugins, external tools, or task execution. You may synthesize across "
-                "documents and graph relationships, but you must clearly separate direct "
-                "evidence from higher-level inference. If the answer is not in the context, "
-                'say "I cannot find this information in the available documents."'
-            )
-            instructions = [
-                "Base your answer only on the provided context.",
-                "Cite the source document name and page number for every factual claim.",
-                "Use this exact citation format: [Source: filename.pdf, Page: X]",
-                "When you connect ideas across sources or graph relationships, label that as synthesis or inference.",
-                "Do not claim that you can run plugins, experiments, or tools from this chat.",
-            ]
-        else:
-            system_msg = (
-                "You are a precise research librarian. Answer the user's question based "
-                "only on the provided project context. Keep the response concise and "
-                "evidence-led. If you cannot find the answer, say "
-                '"I cannot find this information in the available documents."'
-            )
-            instructions = [
-                "Base your answer only on the provided context.",
-                "Keep the answer concise and directly responsive.",
-                "Cite the source document name and page number for every factual claim.",
-                "Use this exact citation format: [Source: filename.pdf, Page: X]",
-                "Do not claim access to tools, plugins, or capabilities outside document and graph retrieval.",
-            ]
+        system_msg = (
+            "You are Atlas, a grounded research assistant. Answer the user's question "
+            "based only on the provided project context (documents and graph relationships). "
+            "You may synthesize across sources, but you must clearly separate direct "
+            "evidence from higher-level inference. If the answer is not in the context, "
+            'say "I cannot find this information in the available documents."'
+        )
+        instructions = [
+            "Base your answer only on the provided context.",
+            "Cite the source document name and page number for every factual claim.",
+            "Use this exact citation format: [Source: filename.pdf, Page: X]",
+            "When you connect ideas across sources or graph relationships, label that as synthesis or inference.",
+            "Do not claim that you can run plugins, experiments, or tools from this chat.",
+        ]
 
         user_msg = (
             f"QUESTION: {user_question}\n\n"
@@ -139,7 +122,6 @@ If no dates/entities found, return empty arrays."""
         self,
         user_question: str,
         project_id: str,
-        mode: str = "librarian",
     ) -> Dict[str, Any]:
         """
         Main retrieval function - implements hybrid RAG workflow.
@@ -508,7 +490,6 @@ If no dates/entities found, return empty arrays."""
             system_msg, user_msg = self._build_answer_prompt(
                 user_question=user_question,
                 context_str=context_str,
-                mode=mode,
             )
 
             try:

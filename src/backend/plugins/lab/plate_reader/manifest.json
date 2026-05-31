@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "name": "plate_reader",
+  "version": "0.1.0",
+  "description": "Run a target-binding assay on a synthesized batch using the lab's BMG CLARIOstar. Call AFTER hplc_qc confirmed purity. Returns IC50 (nM) and percent inhibition. Lower IC50 is better — <100 nM is a strong hit, 100–1000 nM is worth iterating on, >1000 nM is typically dead. The user must name the target explicitly; do not guess.",
+  "entry_point": "wrapper.py",
+  "priority": 72,
+  "tags": ["lab", "automation", "assay", "binding"],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "batch_id": {
+        "type": "string",
+        "description": "Batch ID from liquid_handler that already passed hplc_qc."
+      },
+      "target": {
+        "type": "string",
+        "description": "Target protein for the assay (e.g. 'AChE', 'BACE1', 'EGFR')."
+      }
+    },
+    "required": ["batch_id", "target"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "batch_id": {"type": "string"},
+      "target": {"type": "string"},
+      "ic50_nm": {"type": "number"},
+      "percent_inhibition_at_10uM": {"type": "number"},
+      "hit_classification": {"type": "string"},
+      "instrument": {"type": "string"}
+    }
+  }
+}

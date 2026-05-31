@@ -415,37 +415,14 @@ export default function ChatShell({
     <div className="flex h-full max-h-full w-full overflow-hidden">
       {/* Main chat column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Minimal top bar — clear + context panel toggle */}
+        {/* Minimal top bar — clear + context panel toggle.
+            Note: the Librarian/Cortex mode toggle was removed in the single-orchestrator
+            transition. The backend now ignores `mode` entirely. */}
         <div className="shrink-0 flex items-center justify-between border-b border-border/50 bg-card/30 px-3 py-1.5">
           <div className="flex items-center gap-3">
-            {!lockedMode && (
-              <div className="flex items-center gap-1 rounded-xl border border-border/80 bg-background/60 p-1">
-                {CHAT_BRAINS.map(({ mode, label, icon: Icon, accent }) => {
-                  const isActive = effectiveChatMode === mode;
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => setChatMode(mode)}
-                      className={[
-                        'flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors',
-                        isActive
-                          ? 'bg-surface text-foreground ring-1 ring-border/80'
-                          : 'text-muted-foreground hover:bg-surface/70 hover:text-foreground',
-                      ].join(' ')}
-                      title={`Use ${label}`}
-                    >
-                      <Icon className={['h-3.5 w-3.5', isActive ? accent : ''].join(' ')} />
-                      <span>{label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
             <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
               <Zap className="h-3 w-3 text-accent/60" />
-              <span>{effectiveChatMode === 'cortex' ? 'Cortex grounded reasoning' : 'Librarian grounded Q&A'}</span>
+              <span>Atlas grounded chat</span>
               {isLoading && (
                 <span className="flex items-center gap-1 text-accent">
                   <Loader2 className="h-3 w-3 animate-spin" />

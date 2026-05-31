@@ -38,6 +38,20 @@ class TaskLog:
     def __init__(self) -> None:
         self._subscribers: Dict[str, List[asyncio.Queue[TaskEventDTO]]] = {}
         self._lock = threading.Lock()
+        # Per-task sequence-allocation lock so concurrent appends to the same
+        # task can't both read next_sequence=N and produce duplicate (task_id,
+        # sequence) rows. Tasks are independent → finer-grained than a global
+        # write lock.
+        self._task_locks: Dict[str, threading.Lock] = {}
+        self._task_locks_guard = threading.Lock()
+
+    def _lock_for(self, task_id: str) -> threading.Lock:
+        with self._task_locks_guard:
+            lock = self._task_locks.get(task_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._task_locks[task_id] = lock
+            return lock
 
     # ------------------------------------------------------------------
     # Write path
@@ -53,36 +67,37 @@ class TaskLog:
         causal_parents: Optional[List[str]] = None,
     ) -> TaskEventDTO:
         validated = validate_payload(event_type, payload)
-        db: Session = get_project_session(project_id)
-        try:
-            task = db.query(Task).filter(Task.id == task_id).first()
-            if task is None:
-                raise ValueError(f"Task {task_id} not found")
+        with self._lock_for(task_id):
+            db: Session = get_project_session(project_id)
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                if task is None:
+                    raise ValueError(f"Task {task_id} not found")
 
-            seq = task.next_sequence
-            task.next_sequence = seq + 1
-            task.updated_at = datetime.utcnow()
+                seq = task.next_sequence
+                task.next_sequence = seq + 1
+                task.updated_at = datetime.utcnow()
 
-            event = TaskEvent(
-                id=str(uuid.uuid4()),
-                task_id=task_id,
-                sequence=seq,
-                schema_version=SCHEMA_VERSION,
-                timestamp=datetime.utcnow(),
-                actor=actor.value,
-                event_type=event_type.value,
-                causal_parents=list(causal_parents or []),
-                payload=validated,
-            )
-            db.add(event)
-            db.commit()
-            db.refresh(event)
-            dto = _row_to_dto(event)
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+                event = TaskEvent(
+                    id=str(uuid.uuid4()),
+                    task_id=task_id,
+                    sequence=seq,
+                    schema_version=SCHEMA_VERSION,
+                    timestamp=datetime.utcnow(),
+                    actor=actor.value,
+                    event_type=event_type.value,
+                    causal_parents=list(causal_parents or []),
+                    payload=validated,
+                )
+                db.add(event)
+                db.commit()
+                db.refresh(event)
+                dto = _row_to_dto(event)
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
         self._fanout(task_id, dto)
         return dto
@@ -166,6 +181,19 @@ class TaskLog:
                 q.put_nowait(dto)
             except asyncio.QueueFull:
                 logger.warning("Subscriber queue full for task %s", task_id)
+
+    # ------------------------------------------------------------------
+    # Purge
+    # ------------------------------------------------------------------
+
+    def purge_task(self, task_id: str) -> None:
+        """Drop in-process state for a deleted task. Open SSE streams will
+        stop receiving events (their next get() hits the keepalive timeout
+        and the client detects the task is gone)."""
+        with self._lock:
+            self._subscribers.pop(task_id, None)
+        with self._task_locks_guard:
+            self._task_locks.pop(task_id, None)
 
 
 def _row_to_dto(row: TaskEvent) -> TaskEventDTO:

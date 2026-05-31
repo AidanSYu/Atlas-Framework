@@ -108,6 +108,7 @@ _TRANSITIONS: Dict[TransitionKey, TaskState] = {
 
     # PLANNING
     (TaskState.PLANNING, Trigger.BRIEF_READY): TaskState.EXECUTING,
+    (TaskState.PLANNING, Trigger.FINAL_ANSWER_CANDIDATE): TaskState.REVIEWING,
     (TaskState.PLANNING, Trigger.NEED_USER_INFO): TaskState.SUSPENDED,
     (TaskState.PLANNING, Trigger.PLAN_GENERATION_FAILED): TaskState.FAILED,
     (TaskState.PLANNING, Trigger.USER_CANCEL): TaskState.CANCELLED,
@@ -134,6 +135,13 @@ _TRANSITIONS: Dict[TransitionKey, TaskState] = {
     (TaskState.SUSPENDED, Trigger.USER_REPLAN): TaskState.PLANNING,
     (TaskState.SUSPENDED, Trigger.USER_TIMEOUT): TaskState.CANCELLED,
     (TaskState.SUSPENDED, Trigger.USER_CANCEL): TaskState.CANCELLED,
+
+    # COMPLETED is "soft terminal" — the autonomous-lab doctrine says the
+    # loop never closes, so a follow-up prompt to a finished task starts a
+    # new planning round in the SAME task rather than spawning a new one.
+    # (CANCELLED / FAILED stay hard-terminal — they imply something went
+    # wrong and the user should start fresh to avoid carrying broken state.)
+    (TaskState.COMPLETED, Trigger.USER_PROMPT_RECEIVED): TaskState.PLANNING,
 }
 
 

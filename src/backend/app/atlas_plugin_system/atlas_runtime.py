@@ -79,11 +79,19 @@ def extract_assets(
         logger.debug("Asset cache hit for %s at %s", plugin_name, base)
         return base
 
-    # Extract
+    # Extract — guard against zip-slip (members with `..` or absolute paths).
     base.mkdir(parents=True, exist_ok=True)
     logger.info("Extracting assets for %s to %s", plugin_name, base)
 
+    base_resolved = base.resolve()
     with zipfile.ZipFile(io.BytesIO(assets_bytes)) as zf:
+        for member in zf.infolist():
+            target = (base / member.filename).resolve()
+            if base_resolved != target and base_resolved not in target.parents:
+                raise RuntimeError(
+                    f"Refusing to extract '{member.filename}': "
+                    f"escapes asset cache for plugin '{plugin_name}'"
+                )
         zf.extractall(base)
 
     marker.write_text("ok", encoding="utf-8")

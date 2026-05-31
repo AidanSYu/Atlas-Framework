@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,7 +25,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.core import registry
-from app.core.database import Task, get_project_session
+from app.core.database import Task, TaskEvent, get_project_session
 from app.core.task_events import (
     Actor,
     CircuitBreakerReason,
@@ -40,7 +41,11 @@ from app.core.task_fsm import (
 )
 from app.core.task_log import TaskLog, get_task_log
 from app.services.task_executor import ExecutorBrief, ExecutorExit, TaskExecutor, get_task_executor
-from app.services.task_supervisor import GoalBrief, TaskSupervisor, get_task_supervisor
+from app.services.task_supervisor import (
+    GoalBrief,
+    TaskSupervisor,
+    get_task_supervisor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,14 +163,21 @@ class TaskService:
     ) -> TaskRecord:
         """Entry: record the prompt + kick orchestration off as a background task."""
         task = self._require_task(project_id, task_id)
-        if task.state not in (TaskState.IDLE, TaskState.INITIALIZING):
+        if task.state not in (TaskState.IDLE, TaskState.INITIALIZING, TaskState.COMPLETED):
             raise ValueError(f"Task {task_id} is not ready to start (state={task.state.value})")
+
+        # Follow-up on a COMPLETED task: clear the prior terminal marker so
+        # the row reads as live again. The FSM transition COMPLETED → PLANNING
+        # below moves the state forward; this just drops the cached outcome.
+        if task.state == TaskState.COMPLETED:
+            self._clear_terminal_outcome(project_id, task_id)
 
         existing = _RUNNING.get(task_id)
         if existing is not None and not existing.done():
             raise ValueError(f"Task {task_id} is already running")
 
         attachment_paths = list(attachments or [])
+        self._mark_task_prompt(project_id, task_id, user_prompt)
 
         self._log.append(
             project_id,
@@ -298,6 +310,53 @@ class TaskService:
             except Exception:
                 logger.exception("Failed to record suspend-response crash for %s", task_id)
 
+    def delete_task(self, project_id: str, task_id: str) -> bool:
+        """Hard-delete a task: cancel if running, drop events, attachments, row.
+
+        Order matters: stop the orchestration first so it can't append more
+        events after we've purged the log; then drop disk artifacts; then
+        delete DB rows (events before the task row to satisfy the FK from
+        TaskEvent.task_id, and orphan any child tasks rather than recursing).
+        """
+        # 1. Cancel in-flight orchestration. We don't await the bg task — its
+        # next checkpoint will see the cancel event / CancelledError and exit;
+        # any straggler append() after the row is gone will raise ValueError
+        # inside the bg task and be swallowed by _run_orchestration_safely.
+        cancel_evt = _CANCEL_EVENTS.pop(task_id, None)
+        if cancel_evt is not None:
+            cancel_evt.set()
+        running = _RUNNING.pop(task_id, None)
+        if running is not None and not running.done():
+            running.cancel()
+
+        # 2. Drop in-process log state (SSE subscribers, per-task sequence lock).
+        self._log.purge_task(task_id)
+
+        # 3. Delete attachment folder on disk (best-effort; missing is fine).
+        try:
+            from app.services.workspace_manager import get_workspace_manager
+            attachments_dir = get_workspace_manager().task_attachments_path(project_id, task_id)
+            if attachments_dir.exists():
+                shutil.rmtree(attachments_dir, ignore_errors=True)
+        except Exception:
+            logger.exception("Failed to remove attachments for task %s", task_id)
+
+        # 4. DB rows. Orphan any child tasks (we don't cascade delete a tree).
+        db: Session = get_project_session(project_id)
+        try:
+            db.query(Task).filter(Task.parent_task_id == task_id).update(
+                {Task.parent_task_id: None}, synchronize_session=False
+            )
+            db.query(TaskEvent).filter(TaskEvent.task_id == task_id).delete(synchronize_session=False)
+            deleted = db.query(Task).filter(Task.id == task_id).delete(synchronize_session=False)
+            db.commit()
+            return deleted > 0
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     async def cancel_task(
         self, project_id: str, task_id: str, reason: Optional[str] = None
     ) -> TaskRecord:
@@ -348,17 +407,12 @@ class TaskService:
             )
             return
 
-        self._log.append(
-            project_id,
-            task_id,
-            Actor.DEEPSEEK,
-            EventType.MANIFEST_SCOPED,
-            {
-                "candidate_tools": scoped.candidates,
-                "selected_tools": scoped.selected,
-                "scoping_reasoning": scoped.reasoning,
-            },
-        )
+        # Single-orchestrator: the supervisor is deterministic and would emit
+        # MANIFEST_SCOPED with the full catalog and SUPERVISOR_BRIEF with the raw
+        # user prompt — pure filler. We still build the brief (the executor needs
+        # it), but skip writing the trivial events to keep the UI uncluttered
+        # and avoid telling the user "I scoped 15 tools" before any real work
+        # happens.
 
         try:
             brief = await self._supervisor.build_brief(user_prompt, scoped)
@@ -367,20 +421,6 @@ class TaskService:
             self._transition(project_id, task_id, TaskState.PLANNING, Trigger.PLAN_GENERATION_FAILED)
             self._set_terminal(project_id, task_id, "failed")
             return
-
-        self._log.append(
-            project_id,
-            task_id,
-            Actor.DEEPSEEK,
-            EventType.SUPERVISOR_BRIEF,
-            {
-                "brief_id": brief.brief_id,
-                "goal_statement": brief.goal_statement,
-                "definition_of_done": brief.definition_of_done,
-                "active_manifest": brief.active_manifest,
-                "constraints": brief.constraints,
-            },
-        )
 
         self._transition(
             project_id,
@@ -433,7 +473,7 @@ class TaskService:
                 self._log.append(
                     project_id,
                     task_id,
-                    Actor.NEMOTRON,
+                    Actor.ORCHESTRATOR,
                     EventType.FINAL_ANSWER,
                     {"answer": result.final_answer or "", "cited_event_ids": []},
                 )
@@ -477,7 +517,7 @@ class TaskService:
                 self._log.append(
                     project_id,
                     task_id,
-                    Actor.DEEPSEEK,
+                    Actor.SUPERVISOR,
                     EventType.SUPERVISOR_REVIEW,
                     {
                         "verdict": "block",
@@ -549,9 +589,13 @@ class TaskService:
         self._log.append(
             project_id,
             task_id,
-            Actor.DEEPSEEK,
+            Actor.SUPERVISOR,
             EventType.SUPERVISOR_REVIEW,
-            {"verdict": verdict.verdict, "reasoning": verdict.reasoning},
+            {
+                "verdict": verdict.verdict,
+                "reasoning": verdict.reasoning,
+                "user_question": verdict.user_question,
+            },
         )
 
         if verdict.verdict == "approve" and candidate_answer:
@@ -571,7 +615,7 @@ class TaskService:
             self._log.append(
                 project_id,
                 task_id,
-                Actor.DEEPSEEK,
+                Actor.SUPERVISOR,
                 EventType.GOAL_BRIEF_REVISION,
                 {
                     "brief_id": new_brief_id,
@@ -648,11 +692,33 @@ class TaskService:
             db.close()
         return result.to_state
 
+    def _clear_terminal_outcome(self, project_id: str, task_id: str) -> None:
+        """Clear the cached terminal_outcome so a resurrected task reads as live."""
+        db: Session = get_project_session(project_id)
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if task is not None and task.terminal_outcome is not None:
+                task.terminal_outcome = None
+                task.updated_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     def _set_terminal(self, project_id: str, task_id: str, outcome: str) -> None:
+        terminal_state = {
+            "completed": TaskState.COMPLETED,
+            "cancelled": TaskState.CANCELLED,
+            "failed": TaskState.FAILED,
+        }.get(outcome)
         db: Session = get_project_session(project_id)
         try:
             task = db.query(Task).filter(Task.id == task_id).first()
             if task is not None:
+                if terminal_state is not None:
+                    task.state = terminal_state.value
                 task.terminal_outcome = outcome
                 task.updated_at = datetime.utcnow()
                 db.commit()
@@ -662,6 +728,24 @@ class TaskService:
         finally:
             db.close()
         _CANCEL_EVENTS.pop(task_id, None)
+
+    def _mark_task_prompt(self, project_id: str, task_id: str, user_prompt: str) -> None:
+        title = _derive_task_title(user_prompt)
+        db: Session = get_project_session(project_id)
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if task is not None:
+                if not task.initial_prompt:
+                    task.initial_prompt = user_prompt
+                if not task.title:
+                    task.title = title
+                task.updated_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def _require_task(self, project_id: str, task_id: str) -> TaskRecord:
         rec = self.get_task(project_id, task_id)
@@ -748,7 +832,7 @@ def _summarize_trace(events: List[TaskEventDTO]) -> str:
 
 def _find_pending_question_event(events: List[TaskEventDTO]) -> Optional[str]:
     for evt in reversed(events):
-        if evt.event_type == EventType.SUPERVISOR_REVIEW and evt.payload.get("verdict") == "block":
+        if evt.event_type == EventType.SUPERVISOR_REVIEW and evt.payload.get("verdict") in {"ask_user", "block"}:
             return evt.event_id
         if evt.event_type == EventType.TOOL_EXECUTION_RESULT and evt.payload.get("status") == "requires_human":
             return evt.event_id
@@ -757,8 +841,8 @@ def _find_pending_question_event(events: List[TaskEventDTO]) -> Optional[str]:
 
 def _extract_question_text(events: List[TaskEventDTO]) -> Optional[str]:
     for evt in reversed(events):
-        if evt.event_type == EventType.SUPERVISOR_REVIEW and evt.payload.get("verdict") == "block":
-            return str(evt.payload.get("reasoning") or "")
+        if evt.event_type == EventType.SUPERVISOR_REVIEW and evt.payload.get("verdict") in {"ask_user", "block"}:
+            return str(evt.payload.get("user_question") or evt.payload.get("reasoning") or "")
         if evt.event_type == EventType.TOOL_EXECUTION_RESULT and evt.payload.get("status") == "requires_human":
             out = evt.payload.get("output") or {}
             return str(out.get("summary") or "")
@@ -792,6 +876,13 @@ def _dedupe_preserving_order(items: List[str]) -> List[str]:
         seen.add(it)
         out.append(it)
     return out
+
+
+def _derive_task_title(prompt: str) -> str:
+    text = " ".join((prompt or "").strip().split())
+    if not text:
+        return "Untitled task"
+    return text[:48] + ("..." if len(text) > 48 else "")
 
 
 # Singleton

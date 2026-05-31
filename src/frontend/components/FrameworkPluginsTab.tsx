@@ -29,7 +29,6 @@ import {
   type FrameworkRuntimeResponse,
   type FrameworkToolInfo,
 } from '@/lib/api';
-import { MwmShadowPanel } from '@/components/MwmShadowPanel';
 
 function prettyJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
@@ -632,8 +631,6 @@ export function FrameworkPluginsTab() {
                     </div>
                   )}
                 </div>
-
-                {selectedPlugin.name === 'manufacturing_world_model' && <MwmShadowPanel />}
               </div>
             </div>
           </div>

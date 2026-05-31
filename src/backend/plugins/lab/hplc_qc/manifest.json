@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "name": "hplc_qc",
+  "version": "0.1.0",
+  "description": "Run HPLC purity QC on a synthesized batch using the lab's Agilent 1290 Infinity II. Call AFTER liquid_handler produced a batch_id. If passed_qc is true, the natural next tool is plate_reader for the binding assay. If passed_qc is false (purity <95%), branch to nmr_qc to confirm structural identity before running the assay — a contaminant could give a misleading readout.",
+  "entry_point": "wrapper.py",
+  "priority": 71,
+  "tags": ["lab", "automation", "qc", "hplc"],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "batch_id": {
+        "type": "string",
+        "description": "Batch ID returned by liquid_handler (format: LH-XXXXXXXX)."
+      }
+    },
+    "required": ["batch_id"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "batch_id": {"type": "string"},
+      "purity_percent": {"type": "number"},
+      "retention_time_min": {"type": "number"},
+      "peak_count": {"type": "integer"},
+      "passed_qc": {"type": "boolean"},
+      "instrument": {"type": "string"}
+    }
+  }
+}

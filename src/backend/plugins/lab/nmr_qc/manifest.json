@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "name": "nmr_qc",
+  "version": "0.1.0",
+  "description": "Run 1H NMR on a synthesized batch using the lab's Bruker AVANCE NEO 400 MHz to confirm structural identity. Returns observed chemical shifts. Call this when hplc_qc returns passed_qc=false (impurity may be a regioisomer) or when plate_reader gives an unexpected result and you suspect the wrong compound was synthesized. Do NOT call this on every batch — only when there is a reason to doubt the synthesis.",
+  "entry_point": "wrapper.py",
+  "priority": 73,
+  "tags": ["lab", "automation", "qc", "nmr"],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "batch_id": {
+        "type": "string",
+        "description": "Batch ID from liquid_handler."
+      },
+      "expected_smiles": {
+        "type": "string",
+        "description": "The SMILES of the compound you expected to synthesize."
+      }
+    },
+    "required": ["batch_id", "expected_smiles"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "batch_id": {"type": "string"},
+      "chemical_shifts_ppm": {"type": "array", "items": {"type": "number"}},
+      "proton_count": {"type": "integer"},
+      "structure_confirmed": {"type": "boolean"},
+      "notes": {"type": "string"},
+      "instrument": {"type": "string"}
+    }
+  }
+}

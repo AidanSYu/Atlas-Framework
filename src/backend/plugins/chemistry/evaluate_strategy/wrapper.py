@@ -48,11 +48,19 @@ class EvaluateStrategyWrapper:
             })
 
         evaluated_routes.sort(key=lambda x: x["feasibility_score"], reverse=True)
+        for r in evaluated_routes:
+            r["engine_used"] = "heuristic_step_material_penalty"
         return {
-            "valid": True,
+            "valid": False,
+            "engine_used": "heuristic_step_material_penalty",
             "routes_evaluated": len(evaluated_routes),
-            "recommendation": f"Route {evaluated_routes[0]['route_index']} appears most feasible.",
+            "recommendation": f"Route {evaluated_routes[0]['route_index']} appears most feasible (HEURISTIC ONLY).",
             "scored_routes": evaluated_routes,
+            "summary": (
+                f"Evaluated {len(evaluated_routes)} route(s) with a step+material heuristic. "
+                "WARNING: feasibility scores are not derived from real reaction data or yield models; "
+                "treat as a rough sort, not a quantitative prediction."
+            ),
         }
 
 

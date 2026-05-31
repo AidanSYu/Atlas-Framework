@@ -28,10 +28,13 @@ export type NormalizedEvent =
   | { type: 'grounding'; claim: string; status: string; confidence: number }
   | { type: 'hypotheses'; items: any[] }
   | { type: 'graph_analysis'; data: any }
-  | { type: 'chunk'; content: string }
+  | { type: 'chunk'; content: string; iteration?: number }
   | { type: 'complete'; result: any }
-  | { type: 'error'; message: string; category: FailureCategory }
+  | { type: 'error'; message: string; category: FailureCategory; traceback?: string; where?: string; nonFatal?: boolean; iteration?: number }
   | { type: 'cancelled' }
+  // Atlas Framework orchestration lifecycle (streaming /api/framework/run/stream)
+  | { type: 'run_start'; runId: string; model: string | null; availableTools: string[]; tracePath: string | null }
+  | { type: 'iteration_start'; iteration: number }
   // Phase 4: Coordinator HITL events
   | { type: 'coordinator_thinking'; content: string }
   | { type: 'coordinator_question'; question: string; options: string[]; context?: string; turn: number; goalsSoFar: string[] }
@@ -238,7 +241,7 @@ function mapRawEvent(eventType: string, data: any): NormalizedEvent {
       return { type: 'graph_analysis', data };
 
     case 'chunk':
-      return { type: 'chunk', content: data.content || '' };
+      return { type: 'chunk', content: data.content || '', iteration: data.iteration };
 
     case 'complete':
       return { type: 'complete', result: data };
@@ -247,7 +250,27 @@ function mapRawEvent(eventType: string, data: any): NormalizedEvent {
       return { type: 'cancelled' };
 
     case 'error':
-      return { type: 'error', message: data.message || 'Unknown error', category: 'backend_runtime' };
+      return {
+        type: 'error',
+        message: data.message || 'Unknown error',
+        category: 'backend_runtime',
+        traceback: data.traceback,
+        where: data.where,
+        nonFatal: data.non_fatal === true,
+        iteration: data.iteration,
+      };
+
+    case 'run_start':
+      return {
+        type: 'run_start',
+        runId: data.run_id || '',
+        model: data.model ?? null,
+        availableTools: data.available_tools || [],
+        tracePath: data.trace_path ?? null,
+      };
+
+    case 'iteration_start':
+      return { type: 'iteration_start', iteration: data.iteration || 0 };
 
     // Phase 4: Coordinator events
     case 'coordinator_thinking':

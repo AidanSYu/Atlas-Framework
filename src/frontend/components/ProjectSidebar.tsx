@@ -18,13 +18,7 @@ import {
 import { api, type FileInfo, type TaskInfo, type TaskState } from '@/lib/api';
 import type { WorkspaceMode } from '@/lib/workspace-mode';
 import { useChatStore } from '@/stores/chatStore';
-
-export interface DiscoverySessionListItem {
-  sessionId: string;
-  sessionName: string;
-  createdAt: string | null;
-  status: string;
-}
+import { toastError } from '@/stores/toastStore';
 
 interface ProjectSidebarProps {
   projectId: string;
@@ -39,17 +33,12 @@ interface ProjectSidebarProps {
   onUploadClick: () => void;
   workspaceMode: WorkspaceMode;
   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
-  // Legacy discovery-session props — kept for compatibility; unused now that Tasks
-  // use the new two-tier orchestration runtime.
-  discoverySessions?: DiscoverySessionListItem[];
-  activeExperimentSessionId?: string | null;
-  onExperimentSelect?: (sessionId: string) => void;
-  onNewExperiment?: () => void;
   // Task runtime
   tasks: TaskInfo[];
   activeTaskId: string | null;
   onTaskSelect: (taskId: string) => void;
   onNewTask: () => void;
+  onTaskDelete: (taskId: string) => void;
 }
 
 const MODE_META: Record<
@@ -98,14 +87,11 @@ export function ProjectSidebar({
   onUploadClick,
   workspaceMode,
   onWorkspaceModeChange,
-  discoverySessions: _unusedDiscoverySessions,
-  activeExperimentSessionId: _unusedActiveExperimentSessionId,
-  onExperimentSelect: _unusedOnExperimentSelect,
-  onNewExperiment: _unusedOnNewExperiment,
   tasks,
   activeTaskId,
   onTaskSelect,
   onNewTask,
+  onTaskDelete,
 }: ProjectSidebarProps) {
   const [filesOpen, setFilesOpen] = useState(true);
   const [sessionsOpen, setSessionsOpen] = useState(true);
@@ -201,6 +187,7 @@ export function ProjectSidebar({
                 tasks={tasks}
                 activeTaskId={activeTaskId}
                 onSelect={onTaskSelect}
+                onDelete={onTaskDelete}
               />
             </div>
           )}
@@ -433,8 +420,9 @@ function FileList({
         if (!silent) setLoading(true);
         const fileList = await api.listFiles(projectId);
         setFiles(fileList);
-      } catch (error) {
+      } catch (error: any) {
         console.error('Failed to load files:', error);
+        toastError(`Failed to load files: ${error?.message ?? String(error)}`);
       } finally {
         if (!silent) setLoading(false);
       }
@@ -474,8 +462,9 @@ function FileList({
       await api.deleteFile(docId, projectId);
       setFiles((prev) => prev.filter((file) => file.doc_id !== docId));
       onFileDeleted?.(docId);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Delete failed:', error);
+      toastError(`Delete failed: ${error?.message ?? String(error)}`);
     } finally {
       setDeletingId(null);
     }
@@ -628,70 +617,16 @@ function SessionList({
   );
 }
 
-function DiscoverySessionList({
-  sessions,
-  activeSessionId,
-  onSelect,
-}: {
-  sessions: DiscoverySessionListItem[];
-  activeSessionId: string | null;
-  onSelect: (sessionId: string) => void;
-}) {
-  if (sessions.length === 0) {
-    return (
-      <div className="flex flex-col items-center px-3 py-6 text-center">
-        <FlaskConical className="mb-2 h-5 w-5 text-muted-foreground/20" />
-        <p className="text-xs text-muted-foreground">No tasks yet</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col">
-      {sessions.map((session) => {
-        const isActive = activeSessionId === session.sessionId;
-        const statusTone =
-          session.status === 'running'
-            ? 'bg-warning'
-            : session.status === 'complete'
-              ? 'bg-success'
-              : 'bg-muted-foreground/50';
-
-        return (
-          <button
-            key={session.sessionId}
-            type="button"
-            onClick={() => onSelect(session.sessionId)}
-            className={[
-              'group flex w-full items-start gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-hover',
-              isActive ? 'border-l-2 border-emerald-400 bg-emerald-500/8 text-emerald-200' : 'text-muted-foreground',
-            ].join(' ')}
-          >
-            <div className="mt-1 flex items-center gap-1.5">
-              <span className={['h-1.5 w-1.5 rounded-full', statusTone].join(' ')} />
-              <FlaskConical className="h-3.5 w-3.5 shrink-0" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-medium text-foreground">{session.sessionName}</div>
-              <div className="mt-0.5 text-[10px] capitalize text-muted-foreground/75">
-                {session.status} · {formatRelativeTime(session.createdAt ?? Date.now())}
-              </div>
-            </div>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 function TaskList({
   tasks,
   activeTaskId,
   onSelect,
+  onDelete,
 }: {
   tasks: TaskInfo[];
   activeTaskId: string | null;
   onSelect: (taskId: string) => void;
+  onDelete: (taskId: string) => void;
 }) {
   if (tasks.length === 0) {
     return (
@@ -709,26 +644,41 @@ function TaskList({
         const tone = taskStateTone(task.state);
         const label = task.title || task.initial_prompt || 'Untitled task';
         return (
-          <button
+          <div
             key={task.id}
-            type="button"
-            onClick={() => onSelect(task.id)}
             className={[
-              'group flex w-full items-start gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-hover',
+              'group relative flex w-full items-start gap-2 pl-3 pr-2 py-2 text-left text-xs transition-colors hover:bg-surface-hover',
               isActive ? 'border-l-2 border-emerald-400 bg-emerald-500/8 text-emerald-200' : 'text-muted-foreground',
             ].join(' ')}
           >
-            <div className="mt-1 flex items-center gap-1.5">
-              <span className={['h-1.5 w-1.5 rounded-full', tone.dot].join(' ')} />
-              <FlaskConical className="h-3.5 w-3.5 shrink-0" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-medium text-foreground">{label}</div>
-              <div className="mt-0.5 text-[10px] capitalize text-muted-foreground/75">
-                {tone.label} · {formatRelativeTime(task.updated_at || task.created_at)}
+            <button
+              type="button"
+              onClick={() => onSelect(task.id)}
+              className="flex min-w-0 flex-1 items-start gap-2 text-left"
+            >
+              <div className="mt-1 flex items-center gap-1.5">
+                <span className={['h-1.5 w-1.5 rounded-full', tone.dot].join(' ')} />
+                <FlaskConical className="h-3.5 w-3.5 shrink-0" />
               </div>
-            </div>
-          </button>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium text-foreground">{label}</div>
+                <div className="mt-0.5 text-[10px] capitalize text-muted-foreground/75">
+                  {tone.label} · {formatRelativeTime(task.updated_at || task.created_at)}
+                </div>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete(task.id);
+              }}
+              className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-destructive/20 hover:text-destructive group-hover:opacity-100"
+              title="Delete task"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          </div>
         );
       })}
     </div>

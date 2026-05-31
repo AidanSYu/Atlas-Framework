@@ -50,24 +50,55 @@ class ScoreSynthesizabilityWrapper:
         for smi in smiles_list:
             smi = (smi or "").strip()
             if not smi:
-                scores.append({"smiles": "", "sa_score": 5.0, "feasible": False})
+                scores.append({
+                    "smiles": "", "sa_score": None, "feasible": False,
+                    "engine_used": "none", "valid": False,
+                    "error": "empty SMILES",
+                })
                 continue
             try:
                 if use_sascorer:
                     mol = Chem.MolFromSmiles(smi)
-                    sa = round(sascorer.calculateScore(mol), 2) if mol else round(_heuristic_sa_score(smi), 2)
+                    if mol:
+                        sa = round(sascorer.calculateScore(mol), 2)
+                        engine = "rdkit_sascorer"
+                        valid = True
+                    else:
+                        sa = round(_heuristic_sa_score(smi), 2)
+                        engine = "heuristic_smiles_length"
+                        valid = False
                 else:
                     sa = round(_heuristic_sa_score(smi), 2)
-                scores.append({"smiles": smi, "sa_score": sa, "feasible": sa <= 6.0})
+                    engine = "heuristic_smiles_length"
+                    valid = False
+                scores.append({
+                    "smiles": smi, "sa_score": sa, "feasible": sa <= 6.0,
+                    "engine_used": engine, "valid": valid,
+                })
             except Exception as e:
                 logger.exception("Error scoring SMILES %r: %s", smi, e)
                 sa = round(_heuristic_sa_score(smi), 2)
-                scores.append({"smiles": smi, "sa_score": sa, "feasible": sa <= 6.0})
+                scores.append({
+                    "smiles": smi, "sa_score": sa, "feasible": sa <= 6.0,
+                    "engine_used": "heuristic_smiles_length", "valid": False,
+                    "error": str(e),
+                })
 
         feasible_count = sum(1 for s in scores if s.get("feasible"))
+        heuristic_count = sum(1 for s in scores if s.get("engine_used", "").startswith("heuristic"))
+        engine_note = (
+            " WARNING: SA scores are SMILES-length heuristic, not from rdkit.Contrib.SA_Score."
+            if heuristic_count == len(scores) and scores
+            else (f" Note: {heuristic_count}/{len(scores)} scores are heuristic." if heuristic_count else "")
+        )
         return {
             "scores": scores,
-            "summary": f"SA scores for {len(scores)} molecules: {feasible_count} feasible (SA <= 6), {len(scores) - feasible_count} infeasible.",
+            "engine_used": "rdkit_sascorer" if heuristic_count == 0 else ("mixed" if heuristic_count < len(scores) else "heuristic"),
+            "valid": heuristic_count == 0,
+            "summary": (
+                f"SA scores for {len(scores)} molecules: {feasible_count} feasible (SA <= 6), "
+                f"{len(scores) - feasible_count} infeasible." + engine_note
+            ),
         }
 
 

@@ -517,6 +517,7 @@ class LLMService:
             use_mlock=True,      # Keep model in RAM to prevent swapping
             check_tensors=False, # Skip tensor checks for faster loading
             cache=True,          # Enable KV cache for multi-turn speedup
+            flash_attn=True,     # Halves KV cache VRAM — required for 4GB cards
             verbose=settings.LLM_VERBOSE,
             n_threads=4
         )
@@ -572,9 +573,11 @@ class LLMService:
             return
         logger.info("Unloading ingestion LLM: %s", self._active_model_name)
         try:
+            if hasattr(self._llm, "close"):
+                self._llm.close()
             del self._llm
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Error closing ingestion LLM: %s", e)
         self._llm = None
         self._active_model_name = None
         self._device = "unloaded"
@@ -625,9 +628,13 @@ class LLMService:
 
             # nomic-embed uses custom code (nomic-bert-2048) - trust_remote_code required
             # Must pass as direct arg; model_kwargs is not forwarded to AutoConfig.from_pretrained
-            st_kwargs = {"trust_remote_code": True}
+            # Default to CPU: nomic-embed is 137M params, fast enough on CPU, and on
+            # low-VRAM cards (RTX 3050 / 4GB) keeping it off the GPU is required so
+            # the Nemotron orchestrator can fit. Override with ATLAS_EMBED_DEVICE=cuda.
+            embed_device = os.environ.get("ATLAS_EMBED_DEVICE", "cpu").strip() or "cpu"
+            st_kwargs = {"trust_remote_code": True, "device": embed_device}
             if embed_path and embed_path.exists():
-                logger.info(f"Loading embedding model from {embed_path}")
+                logger.info(f"Loading embedding model from {embed_path} on {embed_device}")
                 self._embedder = SentenceTransformer(str(embed_path), **st_kwargs)
             else:
                 # Fall back to downloading from HuggingFace (first run)
@@ -717,48 +724,29 @@ class LLMService:
         Returns:
             Generated text string
         """
-        # Atlas 3.0: Route to API if in API mode
-        if self._model_source == "api" and self._api_model_name:
-            return await self._generate_via_api(
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-
-        # Lazy load local model
+        # Atlas is offline-first: the cloud LLM stack was removed.
+        # Lazy-load the local GGUF model.
         if self._llm is None:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._load_llm)
 
-        # Handle fallback mode (no llama-cpp-python or no model)
+        # Local model unavailable — surface the real failure instead of returning a
+        # canned string that hides the problem from callers (the user's "no silent
+        # fallback" doctrine).
         if self._llm == "FALLBACK":
-            # Atlas 3.0: Try API fallback if available
-            api_models = self.list_available_api_models()
-            available_api = [m for m in api_models if m.get("has_key")]
-            if available_api:
-                logger.info("Local model unavailable, falling back to API model")
-                await self.load_api_model(available_api[0]["name"])
-                return await self._generate_via_api(
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-
-            logger.warning("LLM generation in fallback mode - returning placeholder response")
             import sys
             if getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS"):
-                msg = (
-                    "LLM is not available in this installation. Run Atlas from source (development mode) for full LLM support."
+                detail = (
+                    "LLM is not available in this installation. Run Atlas from "
+                    "source (development mode) for full LLM support."
                 )
             else:
-                msg = (
-                    "LLM model is not available. Install llama-cpp-python (pip install llama-cpp-python) and add a GGUF model to the models folder, "
-                    "or configure an API key (DEEPSEEK_API_KEY, etc.) for cloud model access."
+                detail = (
+                    "LLM model is not available. Install llama-cpp-python "
+                    "(pip install llama-cpp-python) and add a GGUF model to the "
+                    "models folder."
                 )
-            return (
-                f"I cannot generate a detailed response because the LLM is not available. {msg} "
-                "The retrieval system did find relevant documents."
-            )
+            raise RuntimeError(f"LLMService.generate: {detail}")
 
         # Default stop tokens based on loaded model
         if stop is None:
@@ -812,31 +800,8 @@ class LLMService:
         """
         import json as _json
 
-        # Atlas 3.0: Route to API if in API mode
-        if self._model_source == "api" and self._api_model_name:
-            try:
-                raw = await self._generate_via_api(
-                    messages=[{"role": "user", "content": prompt + "\n\nRespond with ONLY valid JSON matching the required schema."}],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format={"type": "json_object"},
-                )
-                return _json.loads(raw)
-            except _json.JSONDecodeError:
-                # Try extracting JSON from the response
-                start = raw.find("{")
-                end = raw.rfind("}") + 1
-                if start >= 0 and end > start:
-                    try:
-                        return _json.loads(raw[start:end])
-                    except _json.JSONDecodeError:
-                        pass
-                return {}
-            except Exception as e:
-                logger.warning(f"API constrained generation failed: {e}")
-                return {}
-
-        # Lazy load local model
+        # Atlas is offline-first: route only to the local GGUF model.
+        # Lazy-load it.
         if self._llm is None:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._load_llm)
@@ -915,23 +880,6 @@ class LLMService:
         Returns:
             Generated text string
         """
-        # Cross-Store Bridge: prepend Discovery OS stage context when active
-        from app.services.stage_context import get_stage_context_preamble
-        _preamble = get_stage_context_preamble()
-        if _preamble:
-            system_message = _preamble + "\n\n" + system_message
-
-        # Atlas 3.0: Route to API if in API mode (uses native chat format)
-        if self._model_source == "api" and self._api_model_name:
-            return await self._generate_via_api(
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": user_message},
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-
         if self._llm is None:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._load_llm)

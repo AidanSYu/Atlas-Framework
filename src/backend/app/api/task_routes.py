@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -243,6 +243,24 @@ async def upload_task_attachment(
         size_bytes=target_path.stat().st_size,
         mime_type=file.content_type,
     )
+
+
+@router.delete(
+    "/{task_id}",
+    status_code=204,
+    response_class=Response,
+    response_model=None,
+)
+async def delete_task(task_id: str) -> Response:
+    rec = _resolve_task_or_404(task_id)
+    try:
+        deleted = get_task_service().delete_task(rec.project_id, task_id)
+    except Exception as exc:
+        logger.exception("Task delete failed")
+        raise HTTPException(status_code=500, detail=f"Task delete failed: {exc}") from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return Response(status_code=204)
 
 
 @router.post("/{task_id}/cancel", response_model=TaskResponse)

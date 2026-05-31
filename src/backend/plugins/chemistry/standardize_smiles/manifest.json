@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "name": "standardize_smiles",
   "version": "0.1.0",
-  "description": "Canonicalize SMILES, generate InChIKeys, and deduplicate structures.",
+  "description": "Canonicalize SMILES, generate InChIKeys, and deduplicate structures. Call this first when the user provides a SMILES string — other chemistry tools (check_toxicity, predict_admet, score_synthesizability, liquid_handler) expect canonical SMILES as input. After this, the natural next step is check_toxicity.",
   "entry_point": "wrapper.py",
   "priority": 70,
   "tags": ["chemistry", "rdkit", "normalization"],

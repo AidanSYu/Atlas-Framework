@@ -4,25 +4,47 @@ Handles persistent storage of user and agent drafts in the data/drafts/ director
 """
 import json
 import logging
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-import os
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _validate_id(name: str, label: str) -> str:
+    if not isinstance(name, str) or not _SAFE_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid {label}: must be 1-128 chars of [A-Za-z0-9_-]"
+        )
+    return name
+
+
 class WorkspaceService:
     def __init__(self):
-        self.drafts_dir = Path(settings.DRAFTS_DIR)
+        self.drafts_dir = Path(settings.DRAFTS_DIR).resolve()
         self.drafts_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"WorkspaceService initialized with drafts dir: {self.drafts_dir}")
 
     def _get_project_dir(self, project_id: str) -> Path:
         """Get the directory for a specific project, creating it if necessary."""
-        project_dir = self.drafts_dir / project_id
+        _validate_id(project_id, "project_id")
+        project_dir = (self.drafts_dir / project_id).resolve()
+        if self.drafts_dir not in project_dir.parents and project_dir != self.drafts_dir:
+            raise ValueError(f"project_id resolves outside drafts dir: {project_id}")
         project_dir.mkdir(parents=True, exist_ok=True)
         return project_dir
+
+    def _draft_path(self, project_id: str, draft_id: str) -> Path:
+        _validate_id(draft_id, "draft_id")
+        project_dir = self._get_project_dir(project_id)
+        file_path = (project_dir / f"{draft_id}.json").resolve()
+        if project_dir not in file_path.parents:
+            raise ValueError(f"draft_id resolves outside project dir: {draft_id}")
+        return file_path
 
     def list_drafts(self, project_id: str) -> List[Dict[str, Any]]:
         """List all drafts in a project's workspace."""
@@ -45,7 +67,7 @@ class WorkspaceService:
 
     def get_draft(self, project_id: str, draft_id: str) -> Optional[Dict[str, Any]]:
         """Read a draft from the workspace."""
-        file_path = self._get_project_dir(project_id) / f"{draft_id}.json"
+        file_path = self._draft_path(project_id, draft_id)
         if not file_path.exists():
             return None
         
@@ -65,7 +87,7 @@ class WorkspaceService:
 
     def save_draft(self, project_id: str, draft_id: str, content: Any) -> Dict[str, Any]:
         """Save a draft to the workspace."""
-        file_path = self._get_project_dir(project_id) / f"{draft_id}.json"
+        file_path = self._draft_path(project_id, draft_id)
         
         try:
             with open(file_path, "w", encoding="utf-8") as f:
@@ -83,7 +105,7 @@ class WorkspaceService:
 
     def delete_draft(self, project_id: str, draft_id: str) -> bool:
         """Delete a draft from the workspace."""
-        file_path = self._get_project_dir(project_id) / f"{draft_id}.json"
+        file_path = self._draft_path(project_id, draft_id)
         if file_path.exists():
             try:
                 file_path.unlink()

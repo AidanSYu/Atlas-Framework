@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
+import time
 import types
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import settings
 
@@ -34,6 +34,8 @@ class ResourceRequirements(BaseModel):
 class PluginManifest(BaseModel):
     """Validated plugin manifest loaded from manifest.json."""
 
+    model_config = ConfigDict(protected_namespaces=())
+
     schema_version: str = "1.0"
     name: str
     version: str = "0.1.0"
@@ -50,6 +52,12 @@ class PluginManifest(BaseModel):
     resource_requirements: ResourceRequirements = Field(default_factory=ResourceRequirements)
     self_test: str = ""  # shell command to validate the plugin is working
     fallback_used: str = ""  # describes what capability is lost without optional deps
+    # Controls what the orchestrator (model) sees of this tool's result so a
+    # large payload doesn't blow the 8K context. Shape:
+    #   {"salient_fields": ["canonical_smiles", "inchi_key"], "max_chars": 200}
+    # The FULL payload always streams to the UI event log; this only shrinks the
+    # model-facing view. Empty {} = conservative structural default.
+    to_model_projection: Dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass
@@ -89,24 +97,97 @@ class PluginRegistry:
     def __init__(self, plugin_dir: Optional[Path] = None):
         self.plugin_dir = Path(plugin_dir or settings.ATLAS_PLUGIN_DIR)
         self._plugins: Dict[str, RegisteredPlugin] = {}
+        self._last_scan_signature: Optional[Tuple[float, int]] = None
+        self._last_scan_monotonic: float = 0.0
         self.refresh()
+
+    def _directory_signature(self) -> Optional[Tuple[float, int]]:
+        """Return (latest_mtime, child_count) across the plugin tree.
+
+        Catches additions, removals, and edits at one or two levels deep
+        — same depth ``_iter_candidates`` walks. Returns None when the
+        directory cannot be statted.
+        """
+        try:
+            latest = self.plugin_dir.stat().st_mtime
+            count = 0
+            for item in self.plugin_dir.iterdir():
+                if item.name.startswith("."):
+                    continue
+                try:
+                    latest = max(latest, item.stat().st_mtime)
+                except OSError:
+                    continue
+                count += 1
+                if item.is_dir():
+                    try:
+                        for sub in item.iterdir():
+                            if sub.name.startswith("."):
+                                continue
+                            try:
+                                latest = max(latest, sub.stat().st_mtime)
+                            except OSError:
+                                continue
+                            count += 1
+                    except OSError:
+                        continue
+            return (latest, count)
+        except OSError:
+            return None
+
+    def refresh_if_stale(self, ttl_seconds: Optional[float] = None) -> None:
+        """Refresh only when the plugin tree changed or the cache is too old.
+
+        The full ``refresh`` rescans every plugin candidate and re-parses
+        manifests — wasteful on the hot path if nothing changed. This
+        compares a (latest_mtime, child_count) signature against the
+        previous scan and skips work when both match within ``ttl_seconds``.
+        """
+        ttl = settings.ATLAS_PLUGIN_CATALOG_TTL_SECONDS if ttl_seconds is None else ttl_seconds
+        signature = self._directory_signature()
+        now = time.monotonic()
+        if (
+            signature is not None
+            and signature == self._last_scan_signature
+            and (now - self._last_scan_monotonic) < ttl
+        ):
+            return
+        self.refresh()
+        self._last_scan_signature = signature
+        self._last_scan_monotonic = now
 
     def _iter_candidates(self, root: Path) -> List[Path]:
         """Yield plugin candidates from root, supporting one level of grouping.
 
         Supports both flat layout (plugins/my_plugin/) and grouped layout
-        (plugins/chemistry/my_plugin/, plugins/prometheus/my_plugin/).
-        A directory is a group folder if it contains no manifest.json but
-        contains subdirectories that do.
+        (plugins/<group>/<plugin>/). A directory is a group folder if it
+        contains no manifest.json but contains subdirectories that do.
+
+        Any path that resolves outside `root` (e.g. via symlink) is rejected.
         """
+        root_resolved = root.resolve()
+
+        def _is_inside_root(p: Path) -> bool:
+            try:
+                resolved = p.resolve()
+            except OSError:
+                return False
+            return resolved == root_resolved or root_resolved in resolved.parents
+
         candidates: List[Path] = []
         root_dir_names = {
             item.name
             for item in root.iterdir()
-            if item.is_dir() and not item.name.startswith(".")
+            if item.is_dir() and not item.name.startswith(".") and _is_inside_root(item)
         }
         for item in sorted(root.iterdir(), key=lambda p: p.name.lower()):
             if item.name.startswith("."):
+                continue
+            if not _is_inside_root(item):
+                logger.warning(
+                    "Refusing plugin candidate %s: resolves outside plugin dir %s",
+                    item, root_resolved,
+                )
                 continue
             if item.is_dir():
                 manifest_path = item / "manifest.json"
@@ -118,10 +199,16 @@ class PluginRegistry:
                     child_dir_names = {
                         sub.name
                         for sub in item.iterdir()
-                        if sub.is_dir() and not sub.name.startswith(".")
+                        if sub.is_dir() and not sub.name.startswith(".") and _is_inside_root(sub)
                     }
                     for sub in sorted(item.iterdir(), key=lambda p: p.name.lower()):
                         if sub.name.startswith("."):
+                            continue
+                        if not _is_inside_root(sub):
+                            logger.warning(
+                                "Refusing plugin candidate %s: resolves outside plugin dir %s",
+                                sub, root_resolved,
+                            )
                             continue
                         if (
                             sub.is_file()
@@ -176,6 +263,8 @@ class PluginRegistry:
             discovered[record.manifest.name] = record
 
         self._plugins = discovered
+        self._last_scan_signature = self._directory_signature()
+        self._last_scan_monotonic = time.monotonic()
         logger.info("Atlas PluginRegistry loaded %d plugin(s)", len(self._plugins))
 
     def _build_record(self, candidate: Path) -> Optional[RegisteredPlugin]:
@@ -292,6 +381,7 @@ class PluginRegistry:
                 "resource_requirements": record.manifest.resource_requirements.model_dump(),
                 "self_test": record.manifest.self_test,
                 "fallback_used": record.manifest.fallback_used,
+                "to_model_projection": record.manifest.to_model_projection,
                 "source": str(record.source_path),
                 "source_type": record.source_type,
                 "loaded": record.wrapper_instance is not None,
@@ -300,35 +390,12 @@ class PluginRegistry:
             for record in self._ordered_plugins()
         ]
 
-    def tool_names(self) -> List[str]:
-        """Return tool names ordered by prompt priority."""
-        return [record.manifest.name for record in self._ordered_plugins()]
-
     def is_exclusive_gpu(self, plugin_name: str) -> bool:
         """Return True if the plugin's manifest requests exclusive GPU access."""
         record = self._plugins.get(plugin_name)
         if record is None:
             return False
         return bool(record.manifest.resource_requirements.exclusive_gpu)
-
-    def build_toolkit_prompt(self) -> str:
-        """Compile manifest schemas into an orchestrator-facing toolkit block."""
-        tool_blocks: List[str] = []
-        for record in self._ordered_plugins():
-            manifest = record.manifest
-            required = manifest.input_schema.get("required", []) if manifest.input_schema else []
-            tool_blocks.append(
-                "\n".join(
-                    [
-                        f"TOOL: {manifest.name}",
-                        "KIND: plugin",
-                        f"DESCRIPTION: {manifest.description}",
-                        f"REQUIRED PARAMETERS: {json.dumps(required, ensure_ascii=True)}",
-                        f"INPUT SCHEMA: {json.dumps(manifest.input_schema, ensure_ascii=True)}",
-                    ]
-                )
-            )
-        return "\n\n".join(tool_blocks)
 
     async def invoke(
         self,
@@ -347,6 +414,7 @@ class PluginRegistry:
         except Exception as exc:
             logger.error("Atlas plugin '%s' failed: %s", plugin_name, exc, exc_info=True)
             return {
+                "status": "error",
                 "summary": f"{plugin_name} failed: {exc}",
                 "error": str(exc),
                 "plugin": plugin_name,
@@ -375,7 +443,13 @@ class PluginRegistry:
                 module.__file__ = f"{record.source_path}:{record.wrapper_reference}"
 
                 if record.source_type == "directory":
-                    wrapper_path = record.source_path / record.wrapper_reference
+                    wrapper_path = (record.source_path / record.wrapper_reference).resolve()
+                    plugin_dir_resolved = record.source_path.resolve()
+                    if plugin_dir_resolved not in wrapper_path.parents:
+                        raise RuntimeError(
+                            f"Refusing to load wrapper '{record.wrapper_reference}': "
+                            f"escapes plugin directory {plugin_dir_resolved}"
+                        )
                     source = wrapper_path.read_text(encoding="utf-8")
                     origin = str(wrapper_path)
                 else:

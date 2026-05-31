@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "name": "liquid_handler",
+  "version": "0.1.0",
+  "description": "Submit a candidate molecule to the lab's automated liquid handler (Hamilton STARlet) to queue a real synthesis run. Returns a batch_id needed for all downstream lab tools (hplc_qc, nmr_qc, plate_reader). Call AFTER score_synthesizability confirms the route is feasible. The natural next tool is hplc_qc to verify the synthesis worked. Do NOT call this twice on the same molecule (it allocates physical reagent inventory).",
+  "entry_point": "wrapper.py",
+  "priority": 70,
+  "tags": ["lab", "automation", "synthesis"],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "target_smiles": {
+        "type": "string",
+        "description": "Canonical SMILES of the molecule to synthesize."
+      },
+      "route_notes": {
+        "type": "string",
+        "description": "Optional one-line description of the planned synthesis route."
+      }
+    },
+    "required": ["target_smiles"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "batch_id": {"type": "string"},
+      "status": {"type": "string"},
+      "estimated_completion_min": {"type": "integer"},
+      "instrument": {"type": "string"}
+    }
+  }
+}

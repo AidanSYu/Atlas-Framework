@@ -162,16 +162,6 @@ class DocumentChunk(ProjectBase):
     )
 
 
-class DiscoverySession(ProjectBase):
-    __tablename__ = "discovery_sessions"
-
-    id = Column(String, primary_key=True, default=_generate_uuid)
-    project_id = Column(String, nullable=True, index=True)
-    target_params = Column(JSON, nullable=False, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
 class Task(ProjectBase):
     __tablename__ = "tasks"
 
@@ -195,22 +185,6 @@ class Task(ProjectBase):
         Index("idx_tasks_parent", "parent_task_id"),
         Index("idx_tasks_state", "state"),
     )
-
-
-class CapabilityGapRecord(ProjectBase):
-    __tablename__ = "capability_gaps"
-
-    id = Column(String, primary_key=True, default=_generate_uuid)
-    run_id = Column(String, nullable=False)
-    stage = Column(Integer, nullable=False)
-    required_function = Column(Text, nullable=False)
-    input_schema = Column(JSON, nullable=False, default=dict)
-    output_schema = Column(JSON, nullable=False, default=dict)
-    standard_reference = Column(Text, nullable=True)
-    resolution_method = Column(String, nullable=True)
-    resolution_config = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    resolved_at = Column(DateTime, nullable=True)
 
 
 class TaskEvent(ProjectBase):

@@ -27,6 +27,18 @@ class ToolCatalog:
         self.core_tools.refresh()
         self.plugins.refresh()
 
+    def refresh_if_stale(self) -> None:
+        """Refresh only if the plugin directory has changed or scan is old.
+
+        Avoids a per-request filesystem rescan when nothing has changed —
+        the orchestrator's hot path calls this on every prompt.
+        """
+        self.core_tools.refresh()
+        if hasattr(self.plugins, "refresh_if_stale"):
+            self.plugins.refresh_if_stale()
+        else:
+            self.plugins.refresh()
+
     def list_core_tools(self) -> List[Dict[str, Any]]:
         return self.core_tools.list_tools()
 
@@ -48,16 +60,6 @@ class ToolCatalog:
 
     def tool_names(self) -> List[str]:
         return [tool["name"] for tool in self.list_tools()]
-
-    def build_toolkit_prompt(self) -> str:
-        sections: List[str] = []
-        core_prompt = self.core_tools.build_toolkit_prompt()
-        if core_prompt:
-            sections.append("ALWAYS-ON CORE TOOLS:\n" + core_prompt)
-        plugin_prompt = self.plugins.build_toolkit_prompt()
-        if plugin_prompt:
-            sections.append("OPTIONAL PLUGINS:\n" + plugin_prompt)
-        return "\n\n".join(sections)
 
     def build_openai_tools_block(self) -> str:
         """Emit all tools as OpenAI-compatible JSON lines for the <tools> block.

@@ -28,8 +28,8 @@ SCHEMA_VERSION = 1
 
 class Actor(str, Enum):
     USER = "USER"
-    DEEPSEEK = "DEEPSEEK"
-    NEMOTRON = "NEMOTRON"
+    SUPERVISOR = "SUPERVISOR"     # formerly DEEPSEEK — deterministic supervisor
+    ORCHESTRATOR = "ORCHESTRATOR" # formerly NEMOTRON — the local tool-loop model
     TOOL_WRAPPER = "TOOL_WRAPPER"
     SYSTEM_FSM = "SYSTEM_FSM"
     SYSTEM_CIRCUIT_BREAKER = "SYSTEM_CIRCUIT_BREAKER"
@@ -47,16 +47,19 @@ class EventType(str, Enum):
     INIT_QUESTION = "INIT_QUESTION"
     INIT_ANSWER = "INIT_ANSWER"
     CONTEXT_WRITTEN = "CONTEXT_WRITTEN"
-    # Planning (DeepSeek)
+    # Planning
     MANIFEST_SCOPED = "MANIFEST_SCOPED"
     SUPERVISOR_BRIEF = "SUPERVISOR_BRIEF"
     GOAL_BRIEF_REVISION = "GOAL_BRIEF_REVISION"
     # Execution
+    ORCHESTRATOR_THINKING = "ORCHESTRATOR_THINKING"  # <think> content emitted between tool calls
+    ORCHESTRATOR_RESPONSE = "ORCHESTRATOR_RESPONSE"  # free-text prose after </think>, before tool_calls
+    ORCHESTRATOR_STREAM_DELTA = "ORCHESTRATOR_STREAM_DELTA"  # live token delta for streaming UI
     TOOL_CALL_INTENT = "TOOL_CALL_INTENT"
     TOOL_EXECUTION_RESULT = "TOOL_EXECUTION_RESULT"
     TOOL_YIELD = "TOOL_YIELD"
     ARTIFACT_WRITTEN = "ARTIFACT_WRITTEN"
-    # Review (DeepSeek)
+    # Review
     SUPERVISOR_REVIEW = "SUPERVISOR_REVIEW"
     FINAL_ANSWER = "FINAL_ANSWER"
     # System
@@ -144,12 +147,42 @@ class GoalBriefRevisionPayload(BaseModel):
     active_manifest: Optional[List[str]] = None  # None = inherit from parent
 
 
+class OrchestratorThinkingPayload(BaseModel):
+    """The model's <think> content for one iteration — visible reasoning that
+    precedes the iteration's tool calls (or, on the final turn, the answer).
+    Surfacing this is what differentiates Atlas from "black-box assistant"."""
+    content: str
+    iteration: int = 0
+
+
+class OrchestratorResponsePayload(BaseModel):
+    """Free-text prose the model emits after </think> and before <tool_call>.
+    This is the model talking TO the user ("I'll standardize this then check
+    toxicity"), distinct from THINKING which is internal reasoning."""
+    content: str
+    iteration: int = 0
+
+
+class OrchestratorStreamDeltaPayload(BaseModel):
+    """Live token-level delta during streaming generation. Coalesced by the
+    frontend per (iteration, phase) for a live-typing UI; superseded by the
+    canonical ORCHESTRATOR_THINKING / ORCHESTRATOR_RESPONSE events once the
+    iteration completes."""
+    iteration: int
+    phase: str  # "thinking" | "response"
+    delta: str
+
+
 class ToolCallIntentPayload(BaseModel):
     call_id: str
     tool_name: str
     plugin_version: Optional[str] = None
     arguments: Dict[str, Any] = Field(default_factory=dict)
     parallel_group_id: Optional[str] = None
+    # Optional human-facing intent line — the one-sentence narration the model
+    # writes BEFORE the tool_call so the audience sees "I'll standardize this
+    # SMILES" rather than just watching tool boxes blink.
+    intent: Optional[str] = None
 
 
 class ToolOutput(BaseModel):
@@ -181,8 +214,9 @@ class ArtifactWrittenPayload(BaseModel):
 
 
 class SupervisorReviewPayload(BaseModel):
-    verdict: Literal["approve", "revise", "block"]
+    verdict: Literal["approve", "revise", "rescope", "ask_user", "block"]
     reasoning: str
+    user_question: Optional[str] = None
 
 
 class FinalAnswerPayload(BaseModel):
@@ -235,6 +269,9 @@ PAYLOAD_SCHEMAS: Dict[EventType, type[BaseModel]] = {
     EventType.MANIFEST_SCOPED: ManifestScopedPayload,
     EventType.SUPERVISOR_BRIEF: SupervisorBriefPayload,
     EventType.GOAL_BRIEF_REVISION: GoalBriefRevisionPayload,
+    EventType.ORCHESTRATOR_THINKING: OrchestratorThinkingPayload,
+    EventType.ORCHESTRATOR_RESPONSE: OrchestratorResponsePayload,
+    EventType.ORCHESTRATOR_STREAM_DELTA: OrchestratorStreamDeltaPayload,
     EventType.TOOL_CALL_INTENT: ToolCallIntentPayload,
     EventType.TOOL_EXECUTION_RESULT: ToolExecutionResultPayload,
     EventType.TOOL_YIELD: ToolYieldPayload,

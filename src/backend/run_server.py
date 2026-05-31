@@ -5,12 +5,44 @@ This launches the FastAPI sidecar used by both local development and the
 bundled desktop application.
 """
 import os
+import sys
+from pathlib import Path
+
+
+def _ensure_venv_python():
+    # Re-exec under the repo's .venv so `python run_server.py` works without
+    # manual activation. The system python is CPU-only; the venv carries the
+    # CUDA llama-cpp + torch builds.
+    if hasattr(sys, "_MEIPASS"):
+        return
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    if sys.platform == "win32":
+        venv_python = repo_root / ".venv" / "Scripts" / "python.exe"
+    else:
+        venv_python = repo_root / ".venv" / "bin" / "python"
+
+    if not venv_python.exists():
+        return
+
+    try:
+        if Path(sys.executable).resolve() == venv_python.resolve():
+            return
+    except OSError:
+        pass
+
+    import subprocess
+    print(f"[run_server] Relaunching under venv: {venv_python}", file=sys.stderr, flush=True)
+    result = subprocess.run([str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+    sys.exit(result.returncode)
+
+
+_ensure_venv_python()
+
 # Force disable hugging face symlinks to prevent WinError 1314 before any imports happen
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-import sys
 import logging
-from pathlib import Path
 
 # Configure logging before any imports
 logging.basicConfig(

@@ -62,12 +62,24 @@ class StandardizeSmilesWrapper:
                 compound_id = f"ATLAS-{uuid4().hex[:8].upper()}"
                 molecules.append({
                     "smiles": smi, "inchikey": "", "compound_id": compound_id,
-                    "valid": True, "source": meta.get("source", "unknown"),
+                    # passthrough: SMILES are NOT canonicalized and there's no
+                    # InChIKey, so downstream dedup/lookup will be wrong. Mark
+                    # valid=False so consumers know to reject these.
+                    "valid": False,
+                    "passthrough": True,
+                    "engine_used": "passthrough_no_rdkit",
+                    "source": meta.get("source", "unknown"),
                     "name": meta.get("name", ""),
                 })
             return {
                 "molecules": molecules,
-                "summary": f"Passthrough mode (RDKit unavailable): {len(molecules)} processed, {failed_count} failed.",
+                "engine_used": "passthrough_no_rdkit",
+                "valid": False,
+                "summary": (
+                    f"Passthrough mode (RDKit unavailable): {len(molecules)} processed, "
+                    f"{failed_count} failed. WARNING: SMILES were NOT canonicalized and have no "
+                    "InChIKey; downstream dedup/lookup will be unreliable. Install RDKit."
+                ),
                 "failed_count": failed_count,
             }
 
@@ -115,9 +127,13 @@ class StandardizeSmilesWrapper:
                 })
                 failed_count += 1
 
+        for m in molecules:
+            m.setdefault("engine_used", "rdkit")
         valid_count = sum(1 for m in molecules if m.get("valid"))
         return {
             "molecules": molecules,
+            "engine_used": "rdkit",
+            "valid": True,
             "summary": f"Standardized {len(molecules)} molecules: {valid_count} valid, {failed_count} failed or duplicate.",
             "failed_count": failed_count,
         }

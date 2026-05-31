@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "name": "predict_admet",
   "version": "0.1.0",
-  "description": "Predict ADMET risks such as hERG, DILI, Caco-2 permeability, and CYP3A4 inhibition.",
+  "description": "Predict ADMET risks (hERG, DILI, Caco-2 permeability, CYP3A4 inhibition). Call AFTER check_toxicity passes. The output flags which downstream optimizations the molecule will need; the natural next tool is score_synthesizability (medium-risk molecules are still worth synthesizing if the route is cheap).",
   "entry_point": "wrapper.py",
   "priority": 54,
   "tags": ["chemistry", "admet", "prediction"],

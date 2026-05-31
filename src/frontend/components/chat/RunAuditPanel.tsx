@@ -55,6 +55,8 @@ function EventIcon({ type }: { type: string }) {
   switch (type) {
     case 'routing': return <Zap className="h-3 w-3 text-accent" />;
     case 'progress': return <ArrowRight className="h-3 w-3 text-primary" />;
+    case 'run_start': return <Zap className="h-3 w-3 text-accent" />;
+    case 'iteration_start': return <ArrowRight className="h-3 w-3 text-primary" />;
     case 'thinking': return <Brain className="h-3 w-3 text-purple-400" />;
     case 'tool_call': return <Wrench className="h-3 w-3 text-orange-500" />;
     case 'tool_result': return <CheckCircle2 className="h-3 w-3 text-success" />;
@@ -83,6 +85,8 @@ function formatEventSummary(event: NormalizedEvent): string {
     case 'cancelled': return 'Cancelled by user';
     case 'hypotheses': return `Generated ${event.items.length} hypotheses`;
     case 'graph_analysis': return 'Graph analysis complete';
+    case 'run_start': return `Orchestrator ready: ${event.model ?? 'unknown'} (${event.availableTools.length} tools)`;
+    case 'iteration_start': return `Iteration ${event.iteration}`;
     default: return JSON.stringify(event).slice(0, 80);
   }
 }

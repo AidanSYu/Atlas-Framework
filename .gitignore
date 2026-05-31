@@ -30,6 +30,7 @@ orphans_result.json
 test_minimal.py
 test_model.py
 test_output.txt
+tsc-output.txt
 src/backend/app/services/plugins/*-AidanYu.py
 
 # --- Fetched dataset intermediate caches (VisA parquet shards, etc.) ---
@@ -97,6 +98,11 @@ Thumbs.db
 *.sqlite3
 data/
 qdrant_storage/
+qdrant_data/
+src/backend/qdrant_data/
+src/backend/atlas_traces.db
+src/backend/server_error.log
+src/backend/debug-*.log
 
 # --- Installers (Whitelisted) ---
 # Ignore all executables by default...

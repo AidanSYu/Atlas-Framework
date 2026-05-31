@@ -145,15 +145,6 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 200
     TOP_K_RETRIEVAL: int = 5
 
-    # Legacy reasoning controls kept for compatibility with older configs
-    ENABLE_NAVIGATOR_REFLECTION: bool = True  # Enable multi-turn reflection loops
-    MAX_REFLECTION_ITERATIONS: int = 3        # Max reflection cycles (prevents infinite loops)
-    NAVIGATOR_CONFIDENCE_THRESHOLD: float = 0.75  # Auto-pass threshold for high confidence
-
-    # Legacy decomposition controls kept for compatibility with older configs
-    ENABLE_CORTEX_CROSSCHECK: bool = True  # Enable cross-checking and contradiction detection
-    CORTEX_NUM_SUBTASKS: int = 5           # Number of sub-tasks to decompose query into
-
     # Prompt Engineering Configuration (Phase A3)
     USE_PROMPT_TEMPLATES: bool = True      # Enable few-shot prompt templates
     ENABLE_OUTPUT_VALIDATION: bool = True  # Enable structured output validation with retries
@@ -192,9 +183,6 @@ class Settings(BaseSettings):
     # Format: "provider/model-name" as used by LiteLLM
     CLOUD_MODELS: str = "deepseek/deepseek-chat,deepseek/deepseek-reasoner,minimax/MiniMax-M2.5,openai/gpt-4o,openai/gpt-4o-mini,anthropic/claude-sonnet-4-20250514"
 
-    # Default model source preference: "local" or "api"
-    DEFAULT_MODEL_SOURCE: str = "local"
-
     # Atlas Domain Profile — controls ontology and entity labels per vertical
     # Set to "base" for domain-agnostic, "chemistry" for drug discovery, "manufacturing" for Prometheus, etc.
     ATLAS_DOMAIN: str = "base"
@@ -206,18 +194,8 @@ class Settings(BaseSettings):
     ENABLE_EVIDENCE_BOUND_EXTRACTION: bool = True   # Require evidence quotes for edges
     ENABLE_GRAPH_CRITIC: bool = True                 # Validate edges before committing
 
-    # Legacy expert-pipeline controls kept for compatibility with older configs
-    MOE_MAX_EXPERT_ROUNDS: int = 5         # Max rounds of expert delegation
-    MOE_HYPOTHESIS_COUNT: int = 3          # Number of hypotheses to generate
-    ENABLE_AUTONOMOUS_MODE: bool = False   # Allow agents to pursue hypotheses without user approval
-
     # Atlas 3.0: Workspace Configuration (Phase 4)
     DRAFTS_DIR: str = Field(default_factory=lambda: str(Path(__file__).resolve().parent.parent.parent / "data" / "drafts"))
-
-    # Discovery OS Configuration (Phase 1)
-    MAX_TOOL_ITERATIONS: int = 8           # Max ReAct loop iterations before forced final_answer
-    ENABLE_DISCOVERY_MODE: bool = True     # Enable the Discovery OS pipeline
-    DISCOVERY_DEFAULT_PHASE: str = "hit_identification"  # Default workflow phase
 
     # Managed Workspace Storage (AppData-rooted, isolated per workspace)
     ATLAS_WORKSPACES_DIR: str = Field(default_factory=_get_workspaces_dir)
@@ -225,11 +203,22 @@ class Settings(BaseSettings):
     # Atlas Framework Configuration
     ATLAS_PLUGIN_DIR: str = Field(default_factory=_get_plugins_dir)
     ATLAS_ORCHESTRATOR_MODEL: str = "nvidia_Orchestrator-8B-IQ2_M.gguf"
-    ATLAS_ORCHESTRATOR_CONTEXT_SIZE: int = 32768  # Nemotron supports 131k; 32k balances VRAM vs capacity
-    ATLAS_ORCHESTRATOR_MAX_TOKENS: int = 2048     # Room for <think> reasoning + <tool_call> + text
+    # Nemotron-8B-IQ2_M weights ≈ 3 GB. KV cache + compute buffer scale with n_ctx.
+    # At 32k the total VRAM footprint is ~3.9 GB, which OOMs a 4 GB card (RTX 3050)
+    # the moment anything else holds VRAM (embedder, Windows compositor) and llama.cpp
+    # silently drops to CPU. 8192 keeps the load ~3.0 GB with flash_attn and leaves
+    # margin. Users with bigger GPUs can raise via env (ATLAS_ORCHESTRATOR_CONTEXT_SIZE).
+    ATLAS_ORCHESTRATOR_CONTEXT_SIZE: int = 8192
+    ATLAS_ORCHESTRATOR_MAX_TOKENS: int = 2048     # Room for <think> reasoning + <tool_call> + text. Don't raise without raising n_ctx — the math breaks past iteration 1 (sys ~2500 + history ~1500 + max_tokens) on 8192 ctx.
     ATLAS_ORCHESTRATOR_MAX_ITERATIONS: int = 12   # Safety bound — model decides when to stop
     ATLAS_ORCHESTRATOR_TEMPERATURE: float = 0.15
-    ATLAS_ORCHESTRATOR_RESPONSE_MAX_CHARS: int = 8000
+    ATLAS_ORCHESTRATOR_RESPONSE_MAX_CHARS: int = 1500
+    # Llama-cpp thread count for the orchestrator. 0 = use os.cpu_count() // 2
+    # (avoid hyperthreaded virtual cores; they typically hurt throughput).
+    ATLAS_ORCHESTRATOR_N_THREADS: int = 0
+    # How long to consider a plugin catalog scan fresh before re-checking the
+    # plugin directory's mtime. Avoids per-request disk rescans.
+    ATLAS_PLUGIN_CATALOG_TTL_SECONDS: float = 5.0
 
     # Discovery OS LLM Configuration (Phase 5 - Part 1: Isolated from global model selector)
     # These settings are ONLY used by Discovery OS agents (Coordinator, Executor)

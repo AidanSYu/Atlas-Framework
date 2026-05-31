@@ -49,8 +49,8 @@ function EmptyState({ onNewTask, creating }: { onNewTask: () => void; creating: 
       </div>
       <h2 className="mt-5 text-xl font-semibold text-foreground">Start a new task</h2>
       <p className="mt-2 max-w-md text-[13px] text-muted-foreground leading-relaxed">
-        DeepSeek scopes the tools and writes the goal brief. Nemotron runs the tools dynamically,
-        observing results and deciding what to call next — just like Claude Code, but for research.
+        A single local orchestrator picks tools and runs them dynamically, observing results and
+        deciding what to call next — just like Claude Code, but for research, fully offline.
       </p>
       <button
         onClick={onNewTask}

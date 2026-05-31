@@ -1,0 +1,19 @@
+# Atlas Framework — CHEMISTRY plugin requirements
+# ================================================
+# Optional. Install ON TOP OF the core backend only when running the chemistry
+# plugins under src/backend/plugins/chemistry/*. The core framework never
+# imports these (verified by dependency audit), so they stay out of
+# requirements.txt.
+#
+#   pip install -r requirements.txt -r requirements.chemistry.txt
+#
+# All are CPU libraries — no GPU build required. (numpy is already provided by
+# the core requirements.)
+
+rdkit>=2024.3.1        # Molecular properties, SMARTS, SA_Score, filter catalogs
+                       #   (check_toxicity, enumerate_fragments, predict_properties,
+                       #    score_synthesizability, standardize_smiles, predict_admet)
+aizynthfinder>=3.7.0   # Retrosynthesis planning (plan_synthesis)
+admet-ai>=0.1.0        # ADMET prediction: hERG, DILI, Caco2, CYP3A4 (predict_admet)
+nmrglue>=0.9           # JCAMP-DX (.jdx) NMR reading, peak picking (verify_spectrum)
+scipy>=1.11.0          # Signal processing / find_peaks (verify_spectrum)

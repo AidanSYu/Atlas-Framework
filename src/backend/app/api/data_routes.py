@@ -34,10 +34,6 @@ from app.services.document import DocumentService
 from app.services.graph import GraphService
 from app.services.ingest import IngestionService
 from app.services.llm import get_llm_service
-from app.services.stage_context import (
-    format_stage_context_preamble,
-    set_stage_context_preamble,
-)
 from app.services.workspace import WorkspaceService
 from app.services.workspace_manager import get_workspace_manager
 
@@ -128,8 +124,6 @@ class WorkspaceDraftSaveRequest(BaseModel):
 class ChatRequest(BaseModel):
     query: str
     project_id: Optional[str] = None
-    mode: Literal["librarian", "cortex"] = "librarian"
-    stage_context: Optional[Dict[str, Any]] = None
 
 
 class ChatCitation(BaseModel):
@@ -295,20 +289,17 @@ async def get_model_registry() -> Dict[str, Any]:
 @router.post("/chat", response_model=ChatResponse)
 @router.post("/api/chat", response_model=ChatResponse)
 async def chat_query(body: ChatRequest) -> ChatResponse:
-    """Grounded chat endpoint for Librarian/Cortex corpus Q&A."""
+    """Grounded chat endpoint — single orchestrator path."""
     if not body.query.strip():
         raise HTTPException(status_code=400, detail="query is required")
     if not body.project_id:
         raise HTTPException(status_code=400, detail="project_id is required")
     _resolve_project_or_404(body.project_id)
 
-    stage_preamble = format_stage_context_preamble(body.stage_context)
-    set_stage_context_preamble(stage_preamble)
     try:
         result = await get_chat_service().chat(
             body.query.strip(),
             project_id=body.project_id,
-            mode=body.mode,
         )
         return ChatResponse(**result)
     except HTTPException:
@@ -316,8 +307,6 @@ async def chat_query(body: ChatRequest) -> ChatResponse:
     except Exception as exc:
         logger.error("Chat query failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat query failed: {exc}") from exc
-    finally:
-        set_stage_context_preamble(None)
 
 
 # ----------------------------------------------------------------------
@@ -366,6 +355,11 @@ async def list_projects() -> List[ProjectResponse]:
     return [_project_response(e) for e in entries]
 
 
+@router.get("/projects/{project_id}", response_model=ProjectResponse)
+async def get_project(project_id: str) -> ProjectResponse:
+    return _project_response(_resolve_project_or_404(project_id))
+
+
 @router.delete("/projects/{project_id}")
 async def delete_project(project_id: str) -> Dict[str, str]:
     """Close all open handles for the project and rm-rf its folder."""
@@ -397,7 +391,13 @@ async def ingest_document(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
-    if not file.filename.lower().endswith(SUPPORTED_FILE_EXTENSIONS):
+    # Strip any path components — only the basename is allowed. Prevents
+    # `../../etc/foo` and absolute paths from escaping `upload_dir`.
+    safe_filename = Path(file.filename).name
+    if not safe_filename or safe_filename in {".", ".."} or safe_filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    if not safe_filename.lower().endswith(SUPPORTED_FILE_EXTENSIONS):
         supported = ", ".join(SUPPORTED_FILE_EXTENSIONS)
         raise HTTPException(status_code=400, detail=f"Unsupported file type. Supported formats: {supported}")
 
@@ -406,7 +406,9 @@ async def ingest_document(
     manager = get_workspace_manager()
     # Self-heal for projects whose `files/` dir was wiped externally.
     upload_dir = manager.files_path(project_id)
-    upload_path = upload_dir / file.filename
+    upload_path = (upload_dir / safe_filename).resolve()
+    if upload_dir.resolve() not in upload_path.parents:
+        raise HTTPException(status_code=400, detail="Resolved upload path escaped project directory")
     ingestion_service = get_ingestion_service()
 
     try:
@@ -427,16 +429,16 @@ async def ingest_document(
                 return {
                     "status": "duplicate",
                     "message": "Document already exists",
-                    "filename": file.filename,
+                    "filename": safe_filename,
                     "doc_id": str(existing.id),
                 }
 
             file_size = upload_path.stat().st_size
-            _, mime_type = ingestion_service._get_file_type_and_mime(file.filename)
+            _, mime_type = ingestion_service._get_file_type_and_mime(safe_filename)
             doc_id = str(uuid.uuid4())
             document = Document(
                 id=doc_id,
-                filename=file.filename,
+                filename=safe_filename,
                 file_hash=file_hash,
                 file_path=str(upload_path),
                 file_size=file_size,
@@ -453,20 +455,20 @@ async def ingest_document(
         background_tasks.add_task(
             _process_document_background,
             str(upload_path),
-            file.filename,
+            safe_filename,
             project_id,
             doc_id,
         )
         return {
             "status": "processing",
-            "message": f"Document '{file.filename}' uploaded and processing started",
-            "filename": file.filename,
+            "message": f"Document '{safe_filename}' uploaded and processing started",
+            "filename": safe_filename,
             "doc_id": doc_id,
         }
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Ingestion error for %s: %s", file.filename, exc, exc_info=True)
+        logger.error("Ingestion error for %s: %s", safe_filename, exc, exc_info=True)
         if upload_path.exists():
             try:
                 upload_path.unlink()

@@ -578,7 +578,7 @@ export interface ConfigKeysVerifyResponse {
 }
 
 // ============================================================
-// Task Runtime types (two-tier orchestration)
+// Task Runtime types (single Atlas Orchestrator)
 // ============================================================
 
 export type TaskState =
@@ -594,8 +594,8 @@ export type TaskState =
 
 export type TaskActor =
   | 'USER'
-  | 'DEEPSEEK'
-  | 'NEMOTRON'
+  | 'SUPERVISOR'      // formerly DEEPSEEK — deterministic supervisor
+  | 'ORCHESTRATOR'    // formerly NEMOTRON — the local tool-loop model
   | 'TOOL_WRAPPER'
   | 'SYSTEM_FSM'
   | 'SYSTEM_CIRCUIT_BREAKER'
@@ -613,6 +613,9 @@ export type TaskEventType =
   | 'MANIFEST_SCOPED'
   | 'SUPERVISOR_BRIEF'
   | 'GOAL_BRIEF_REVISION'
+  | 'ORCHESTRATOR_THINKING'
+  | 'ORCHESTRATOR_RESPONSE'
+  | 'ORCHESTRATOR_STREAM_DELTA'
   | 'TOOL_CALL_INTENT'
   | 'TOOL_EXECUTION_RESULT'
   | 'TOOL_YIELD'
@@ -692,6 +695,13 @@ export const api = {
     return handleResponse(response);
   },
 
+  async getProject(projectId: string): Promise<ProjectInfo> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}`
+    );
+    return handleResponse(response);
+  },
+
   async deleteProject(projectId: string): Promise<any> {
     const response = await fetchWithTimeout(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}`, {
       method: 'DELETE',
@@ -758,7 +768,7 @@ export const api = {
     return handleResponse(response);
   },
 
-  // ---- Task Runtime (two-tier orchestration: DeepSeek + Nemotron) ----
+  // ---- Task Runtime (single local Atlas Orchestrator) ----
 
   async createTask(params: {
     project_id: string;
@@ -835,6 +845,17 @@ export const api = {
     return handleResponse(response);
   },
 
+  async deleteTask(taskId: string): Promise<void> {
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}`,
+      { method: 'DELETE' }
+    );
+    if (!response.ok && response.status !== 204) {
+      const detail = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(`API Error (${response.status}): ${detail.detail || response.statusText}`);
+    }
+  },
+
   async cancelTask(taskId: string, reason?: string): Promise<TaskInfo> {
     const response = await fetchWithTimeout(
       `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/cancel`,
@@ -902,17 +923,14 @@ export const api = {
     return `${API_BASE_URL}/files/${encodeURIComponent(docId)}?project_id=${encodeURIComponent(projectId)}`;
   },
 
-  // ---- Grounded Chat (Librarian / Cortex) ----
+  // ---- Grounded Chat (single Atlas Orchestrator) ----
 
   async chat(
     query: string,
     projectId?: string,
     signal?: AbortSignal,
-    stageContext?: Record<string, any> | null,
-    mode: 'librarian' | 'cortex' = 'librarian',
   ): Promise<ChatResponse> {
-    const payload: Record<string, any> = { query, project_id: projectId, mode };
-    if (stageContext) payload.stage_context = stageContext;
+    const payload: Record<string, any> = { query, project_id: projectId };
     const response = await fetchWithTimeout(
       `${API_BASE_URL}/chat`,
       {
@@ -924,96 +942,6 @@ export const api = {
       CHAT_TIMEOUT
     );
     return handleResponse(response);
-  },
-
-  // ---- Swarm (Two-Brain Agentic RAG) / MoE (Atlas 3.0) ----
-
-  async runSwarm(query: string, projectId: string): Promise<SwarmResponse> {
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/api/swarm/run`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, project_id: projectId }),
-      },
-      SWARM_TIMEOUT
-    );
-    return handleResponse(response);
-  },
-
-  // ---- Atlas 3.0: MoE (Mixture of Experts) ----
-
-  async runMoE(query: string, projectId: string): Promise<SwarmResponse> {
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/api/moe/run`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, project_id: projectId }),
-      },
-      SWARM_TIMEOUT
-    );
-    return handleResponse(response);
-  },
-
-  async streamMoE(
-    query: string,
-    projectId: string,
-    onEvent: (type: string, data: any) => void,
-    sessionId?: string,
-    signal?: AbortSignal
-  ): Promise<void> {
-    await streamSSE(
-      `${API_BASE_URL}/api/moe/stream`,
-      { query, project_id: projectId, session_id: sessionId },
-      (event) => {
-        if (event.type === 'error') {
-          onEvent('error', { message: event.message });
-        } else if (event.type === 'cancelled') {
-          onEvent('cancelled', {});
-        } else if (event.type === 'complete') {
-          onEvent('complete', event.result);
-        } else if (event.type === 'routing') {
-          onEvent('routing', { brain: event.mode, intent: event.intent });
-        } else if (event.type === 'evidence') {
-          onEvent('evidence', { count: event.count });
-        } else if (event.type === 'grounding') {
-          onEvent('grounding', { claim: event.claim, status: event.status, confidence: event.confidence });
-        } else if (event.type === 'chunk') {
-          onEvent('chunk', { content: event.content });
-        } else {
-          onEvent(event.type, event);
-        }
-      },
-      { signal, timeout: SWARM_TIMEOUT },
-    );
-  },
-
-  async streamMoEHypotheses(
-    query: string,
-    projectId: string,
-    onEvent: (type: string, data: any) => void,
-    sessionId?: string,
-    signal?: AbortSignal
-  ): Promise<void> {
-    await streamSSE(
-      `${API_BASE_URL}/api/moe/hypotheses`,
-      { query, project_id: projectId, session_id: sessionId },
-      (event) => {
-        if (event.type === 'error') {
-          onEvent('error', { message: event.message });
-        } else if (event.type === 'cancelled') {
-          onEvent('cancelled', {});
-        } else if (event.type === 'hypotheses') {
-          onEvent('hypotheses', { items: event.items });
-        } else if (event.type === 'routing') {
-          onEvent('routing', { brain: event.mode, intent: event.intent });
-        } else {
-          onEvent(event.type, event);
-        }
-      },
-      { signal, timeout: SWARM_TIMEOUT },
-    );
   },
 
   // ---- Entities & Graph ----
@@ -1287,43 +1215,6 @@ export const api = {
     return handleResponse(response);
   },
 
-  // ---- Swarm (Two-Brain Agentic RAG) ----
-
-  async streamSwarm(
-    query: string,
-    projectId: string,
-    onEvent: (type: string, data: any) => void,
-    sessionId?: string,
-    signal?: AbortSignal
-  ): Promise<void> {
-    await streamSSE(
-      `${API_BASE_URL}/api/swarm/stream`,
-      { query, project_id: projectId, session_id: sessionId },
-      (event) => {
-        if (event.type === 'error') {
-          onEvent('error', { message: event.message });
-        } else if (event.type === 'cancelled') {
-          onEvent('cancelled', {});
-        } else if (event.type === 'complete') {
-          onEvent('complete', event.result);
-        } else if (event.type === 'routing') {
-          onEvent('routing', { brain: event.mode, intent: event.intent });
-        } else if (event.type === 'graph_analysis') {
-          onEvent('graph_analysis', event.data);
-        } else if (event.type === 'evidence') {
-          onEvent('evidence', { count: event.count });
-        } else if (event.type === 'grounding') {
-          onEvent('grounding', { claim: event.claim, status: event.status, confidence: event.confidence });
-        } else if (event.type === 'chunk') {
-          onEvent('chunk', { content: event.content });
-        } else {
-          onEvent(event.type, event);
-        }
-      },
-      { signal, timeout: SWARM_TIMEOUT },
-    );
-  },
-
   // ============================================================
   // DISCOVERY OS (Phase 1: Deterministic Tool-Calling)
   // ============================================================
@@ -1423,31 +1314,6 @@ export const api = {
   },
 
   // ---- Discovery Sessions (Golden Path) ----
-
-  async listDiscoverySessions(projectId?: string): Promise<Array<{
-    session_id: string;
-    session_name: string;
-    created_at: string | null;
-    status: string;
-    folder_exists: boolean;
-  }>> {
-    const url = projectId
-      ? `${API_BASE_URL}/api/discovery/sessions?project_id=${encodeURIComponent(projectId)}`
-      : `${API_BASE_URL}/api/discovery/sessions`;
-    const response = await fetchWithTimeout(url);
-    return handleResponse(response);
-  },
-
-  async getSessionFiles(sessionId: string): Promise<Array<{
-    filename: string;
-    path: string;
-    size_bytes: number;
-  }>> {
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/api/discovery/${encodeURIComponent(sessionId)}/files`
-    );
-    return handleResponse(response);
-  },
 
   async readSessionFile(sessionId: string, filePath: string): Promise<{
     filename: string;
@@ -1623,6 +1489,33 @@ export const api = {
     return handleResponse(response);
   },
 
+  /**
+   * Stream the Atlas Framework orchestration loop live.
+   *
+   * Each yielded NormalizedEvent reflects either a token delta (`chunk`),
+   * a tool dispatch (`tool_call` / `tool_result`), an error, or the
+   * final `complete` event carrying the full result. Lets the UI render
+   * progress instead of waiting on a single blocking POST.
+   */
+  async streamFramework(
+    params: {
+      prompt: string;
+      project_id?: string;
+      session_id?: string;
+      max_iterations?: number;
+      conversation?: Array<{ role: string; content: string }>;
+    },
+    onEvent: (event: NormalizedEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await streamSSE(
+      `${API_BASE_URL}/api/framework/run/stream`,
+      params as Record<string, any>,
+      onEvent,
+      { signal, timeout: SWARM_TIMEOUT },
+    );
+  },
+
   async invokeFrameworkPlugin(
     pluginName: string,
     argumentsPayload: Record<string, any>,
@@ -1667,47 +1560,4 @@ export const api = {
     return handleResponse(response);
   },
 
-  async getPrometheusDemoCatalog(): Promise<PrometheusDemoCatalogResponse> {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/framework/demos/prometheus`);
-    return handleResponse(response);
-  },
-
-  async runPrometheusDemoScenario(scenarioId: string): Promise<PrometheusDemoRunResponse> {
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/api/framework/demos/prometheus/run`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenario_id: scenarioId }),
-      },
-      SWARM_TIMEOUT,
-    );
-    return handleResponse(response);
-  },
-
-  async runPrometheusDemoBundle(): Promise<PrometheusDemoBundleResponse> {
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/api/framework/demos/prometheus/run-all`,
-      {
-        method: 'POST',
-      },
-      SWARM_TIMEOUT,
-    );
-    return handleResponse(response);
-  },
-
-  async runMwmShadowReplay(
-    payload: MwmShadowReplayRequest,
-  ): Promise<MwmShadowReplayResponse> {
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/api/framework/plugins/manufacturing_world_model/shadow-replay`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      },
-      SWARM_TIMEOUT,
-    );
-    return handleResponse(response);
-  },
 };

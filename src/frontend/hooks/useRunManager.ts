@@ -198,17 +198,13 @@ export function useRunManager(projectId: string): RunManagerAPI {
         appendEvent(run.id, {
           type: 'progress',
           node: 'retrieval',
-          message: mode === 'cortex'
-            ? 'Reviewing relevant passages and graph context'
-            : 'Searching the project corpus',
+          message: 'Searching the project corpus and graph context',
         });
 
         const result = await api.chat(
           query,
           projectId,
           signal ?? undefined,
-          getStageContext(),
-          mode,
         );
 
         appendEvent(run.id, { type: 'thinking', content: result.reasoning });
@@ -221,53 +217,96 @@ export function useRunManager(projectId: string): RunManagerAPI {
         return { result, cancelled: false };
       }
 
-      const result = await api.runFramework({
-        prompt: query,
-        project_id: projectId,
-        conversation: buildConversation(mode, getStageContext()),
-      }, signal ?? undefined);
+      let finalResult: any = null;
+      let fatalError: { message: string; category: any } | null = null;
+      let wasCancelled = false;
 
-      const eventBaseTime = Date.now();
-      (result.trace || []).forEach((step, index) => {
-        if (step.thinking) {
-          appendEvent(run.id, { type: 'thinking', content: step.thinking });
-        }
+      await api.streamFramework(
+        {
+          prompt: query,
+          project_id: projectId,
+          conversation: buildConversation(mode, getStageContext()),
+        },
+        (event) => {
+          switch (event.type) {
+            case 'run_start':
+              appendEvent(run.id, {
+                type: 'progress',
+                node: 'orchestrator',
+                message: event.model
+                  ? `Orchestrator ready: ${event.model} (${event.availableTools.length} tools)`
+                  : 'Orchestrator initialising',
+              });
+              break;
+            case 'iteration_start':
+              appendEvent(run.id, {
+                type: 'progress',
+                node: 'iteration',
+                message: `Iteration ${event.iteration}`,
+              });
+              break;
+            case 'chunk':
+              appendEvent(run.id, { type: 'chunk', content: event.content });
+              break;
+            case 'thinking':
+              appendEvent(run.id, { type: 'thinking', content: event.content });
+              break;
+            case 'tool_call':
+              addToolInvocation(run.id, {
+                tool: event.tool,
+                input: event.input,
+                output: null,
+                startedAt: Date.now(),
+                completedAt: null,
+                status: 'running',
+              });
+              appendEvent(run.id, { type: 'tool_call', tool: event.tool, input: event.input });
+              break;
+            case 'tool_result':
+              updateToolInvocation(run.id, event.tool, {
+                output: event.output,
+                completedAt: Date.now(),
+                status: (event.output as any)?.error ? 'failed' : 'completed',
+              });
+              appendEvent(run.id, { type: 'tool_result', tool: event.tool, output: event.output });
+              break;
+            case 'error': {
+              const detail = [event.where, event.message].filter(Boolean).join(': ');
+              const message = event.traceback ? `${detail}\n\n${event.traceback}` : detail;
+              appendEvent(run.id, { type: 'error', message, category: event.category });
+              if (!event.nonFatal) {
+                fatalError = { message, category: event.category };
+              }
+              break;
+            }
+            case 'complete':
+              finalResult = event.result;
+              break;
+            case 'cancelled':
+              wasCancelled = true;
+              break;
+            default:
+              break;
+          }
+        },
+        signal ?? undefined,
+      );
 
-        const toolCalls = step.tool_calls || [];
-        const toolResults = step.tool_results || [];
+      if (wasCancelled || signal?.aborted) {
+        cancelRun(run.id);
+        return { result: null, cancelled: true };
+      }
+      if (fatalError) {
+        failRun(run.id, (fatalError as any).message, (fatalError as any).category);
+        return { result: null, cancelled: false };
+      }
+      if (!finalResult) {
+        failRun(run.id, 'Orchestration ended without a final answer', 'backend_runtime');
+        return { result: null, cancelled: false };
+      }
 
-        toolCalls.forEach((toolCall, callIndex) => {
-          const startedAt = eventBaseTime + (index * 100) + callIndex;
-          const toolResult = toolResults[callIndex] || {};
-
-          addToolInvocation(run.id, {
-            tool: toolCall.name,
-            input: toolCall.arguments || {},
-            output: null,
-            startedAt,
-            completedAt: null,
-            status: 'running',
-          });
-          appendEvent(run.id, {
-            type: 'tool_call',
-            tool: toolCall.name,
-            input: toolCall.arguments || {},
-          });
-          updateToolInvocation(run.id, toolCall.name, {
-            output: toolResult,
-            completedAt: startedAt + 1,
-            status: toolResult?.error ? 'failed' : 'completed',
-          });
-          appendEvent(run.id, {
-            type: 'tool_result',
-            tool: toolCall.name,
-            output: toolResult,
-          });
-        });
-      });
-
-      completeRun(run.id, result);
-      return { result, cancelled: false };
+      completeRun(run.id, finalResult);
+      return { result: finalResult, cancelled: false };
     } catch (error: any) {
       if (signal?.aborted || error?.name === 'AbortError') {
         cancelRun(run.id);

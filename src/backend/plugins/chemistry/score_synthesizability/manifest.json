@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "name": "score_synthesizability",
   "version": "0.1.0",
-  "description": "Score synthetic accessibility (SA Score 1-10) for a set of SMILES strings.",
+  "description": "Score synthetic accessibility (SA Score 1-10; lower is easier to synthesize). Call AFTER predict_admet. SA <= 5.0 means the route is feasible — natural next tool is liquid_handler to queue physical synthesis. SA > 6.0 means hold and ask the user for a route review.",
   "entry_point": "wrapper.py",
   "priority": 55,
   "tags": ["chemistry", "synthesis", "rdkit"],

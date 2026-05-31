@@ -1,15 +1,16 @@
 """
 Chat Service - Grounded chat interface over the Atlas retrieval substrate.
 
-Production Desktop Sidecar: uses RetrievalService for document + graph-backed Q&A.
+Single-orchestrator: uses RetrievalService for document + graph-backed Q&A.
+The legacy "librarian" / "cortex" personas were removed.
 """
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional
 
 from app.services.retrieval import RetrievalService
 
 
 class ChatService:
-    """Handles chat interactions with the LLM."""
+    """Handles chat interactions with the local LLM."""
 
     def __init__(self):
         self.retrieval_service = RetrievalService()
@@ -18,15 +19,9 @@ class ChatService:
         self,
         user_question: str,
         project_id: Optional[str] = None,
-        mode: Literal["librarian", "cortex"] = "librarian",
     ) -> Dict[str, Any]:
         """
         Process a grounded chat query using hybrid RAG retrieval.
-
-        Args:
-            user_question: The user's question
-            project_id: Optional project scope
-            mode: Chat persona. Both modes stay grounded to retrieval/graph context.
 
         Returns:
             Dict with answer, reasoning, citations, relationships, context_sources
@@ -34,7 +29,6 @@ class ChatService:
         result = await self.retrieval_service.query_atlas(
             user_question,
             project_id=project_id,
-            mode=mode,
         )
         context = result.get("context") or {
             "vector_chunks": [],
@@ -88,7 +82,7 @@ class ChatService:
         return {
             "answer": answer,
             "reasoning": (
-                f"{mode.title()} reviewed {len(vector_chunks)} text chunks, "
+                f"Reviewed {len(vector_chunks)} text chunks, "
                 f"{len(graph_nodes)} graph nodes, and {len(graph_edges)} graph edges."
             ),
             "citations": citations,

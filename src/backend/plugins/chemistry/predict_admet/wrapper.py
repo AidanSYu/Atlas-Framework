@@ -93,9 +93,12 @@ class PredictAdmetWrapper:
             try:
                 raw = model.predict(smiles_list)
                 for i, smi in enumerate(smiles_list):
-                    predictions.append(self._parse_admet_result(smi, raw, i))
+                    pred = self._parse_admet_result(smi, raw, i)
+                    pred["engine_used"] = "admet_ai"
+                    pred["valid"] = True
+                    predictions.append(pred)
             except Exception as e:
-                logger.exception("admet_ai prediction failed, falling back to mock: %s", e)
+                logger.exception("admet_ai prediction failed, falling back to heuristic: %s", e)
                 model = None
                 predictions = []
 
@@ -106,9 +109,20 @@ class PredictAdmetWrapper:
         high_risk = sum(1 for p in predictions if p.get("overall_risk") == "HIGH")
         medium_risk = sum(1 for p in predictions if p.get("overall_risk") == "MEDIUM")
         low_risk = sum(1 for p in predictions if p.get("overall_risk") == "LOW")
+        heuristic_count = sum(1 for p in predictions if p.get("engine_used", "").startswith("heuristic"))
+        engine_note = (
+            " WARNING: all results are SMILES-based heuristics, not real ADMET predictions — install admet_ai for trustworthy output."
+            if heuristic_count == len(predictions) and predictions
+            else (f" Note: {heuristic_count}/{len(predictions)} results are heuristic, not from admet_ai." if heuristic_count else "")
+        )
         return {
             "predictions": predictions,
-            "summary": f"ADMET predictions for {len(predictions)} molecules: {low_risk} low risk, {medium_risk} medium, {high_risk} high.",
+            "engine_used": "admet_ai" if heuristic_count == 0 else ("mixed" if heuristic_count < len(predictions) else "heuristic"),
+            "valid": heuristic_count == 0,
+            "summary": (
+                f"ADMET predictions for {len(predictions)} molecules: "
+                f"{low_risk} low risk, {medium_risk} medium, {high_risk} high." + engine_note
+            ),
         }
 
     @staticmethod
@@ -157,8 +171,13 @@ class PredictAdmetWrapper:
                 mw = Descriptors.MolWt(mol)
         except Exception:
             pass
-        base = _mock_admet_from_mw(mw) if mw is not None else _mock_admet_from_length(len(smi))
-        return {"smiles": smi, **base}
+        if mw is not None:
+            base = _mock_admet_from_mw(mw)
+            engine = "heuristic_rdkit_mw"
+        else:
+            base = _mock_admet_from_length(len(smi))
+            engine = "heuristic_smiles_length"
+        return {"smiles": smi, **base, "engine_used": engine, "valid": False}
 
 
 PLUGIN = PredictAdmetWrapper()

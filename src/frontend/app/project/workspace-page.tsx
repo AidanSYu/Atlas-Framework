@@ -16,16 +16,10 @@ import {
   Sparkles,
 } from 'lucide-react';
 
-import { ExperimentWorkspace } from '@/components/ExperimentWorkspace';
-import { FrameworkPluginsTab } from '@/components/FrameworkPluginsTab';
-import { MissionControl } from '@/components/MissionControl';
 import { OmniBar } from '@/components/OmniBar';
-import PDFViewer from '@/components/PDFViewer';
-import { ProjectSidebar, type DiscoverySessionListItem } from '@/components/ProjectSidebar';
-import SettingsModal from '@/components/SettingsModal';
+import { ProjectSidebar } from '@/components/ProjectSidebar';
 import { StatusBar } from '@/components/StatusBar';
 import TextViewer from '@/components/TextViewer';
-import { RunAuditPanel } from '@/components/chat/RunAuditPanel';
 import ChatShell from '@/components/chat/ChatShell';
 import { useAtlasTheme } from '@/hooks/useAtlasTheme';
 import { WorkspaceTabs, type WorkspaceTab } from '@/components/WorkspaceTabs';
@@ -33,7 +27,6 @@ import type { ChatMode } from '@/hooks/useRunManager';
 import { api, type ModelRegistryResponse, type ModelStatusResponse, type ProjectInfo, type TaskInfo } from '@/lib/api';
 import type { WorkspaceMode } from '@/lib/workspace-mode';
 import { useChatStore } from '@/stores/chatStore';
-import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { toastError, toastSuccess } from '@/stores/toastStore';
 
@@ -41,6 +34,32 @@ const WindowControls = dynamic(
   () => import('@/components/WindowControls').then((module) => ({ default: module.WindowControls })),
   { ssr: false }
 );
+
+const PDFViewer = dynamic(() => import('@/components/PDFViewer'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center">
+      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+    </div>
+  ),
+});
+
+const ExperimentWorkspace = dynamic(
+  () => import('@/components/ExperimentWorkspace').then((m) => ({ default: m.ExperimentWorkspace })),
+  { ssr: false }
+);
+
+const FrameworkPluginsTab = dynamic(
+  () => import('@/components/FrameworkPluginsTab').then((m) => ({ default: m.FrameworkPluginsTab })),
+  { ssr: false }
+);
+
+const RunAuditPanel = dynamic(
+  () => import('@/components/chat/RunAuditPanel').then((m) => ({ default: m.RunAuditPanel })),
+  { ssr: false }
+);
+
+const SettingsModal = dynamic(() => import('@/components/SettingsModal'), { ssr: false });
 
 function ChatLanding({
   onNewChat,
@@ -190,8 +209,9 @@ export default function ProjectWorkspacePage() {
   const nodeCount = useGraphStore((state) => state.nodes.length);
   const refreshGraph = useGraphStore((state) => state.refreshGraph);
 
-  const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(() =>
+    projectId ? { id: projectId, name: projectId, description: null, created_at: '' } : null
+  );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [openTabs, setOpenTabs] = useState<WorkspaceTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -202,9 +222,6 @@ export default function ProjectWorkspacePage() {
   const [auditRunId, setAuditRunId] = useState<string | null>(null);
   const [pdfPage, setPdfPage] = useState(1);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('chat');
-  const [discoverySessions, setDiscoverySessions] = useState<DiscoverySessionListItem[]>([]);
-  const [activeExperimentSessionId, setActiveExperimentSessionId] = useState<string | null>(null);
-  const [experimentSetupOpen, setExperimentSetupOpen] = useState(false);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
@@ -230,36 +247,31 @@ export default function ProjectWorkspacePage() {
   const loadProjectRef = useRef<() => void>();
 
   useEffect(() => {
+    if (!projectId) return;
+
     let alive = true;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let retries = 0;
     const MAX_RETRIES = 3;
 
     const loadProject = async () => {
-      if (!projectId) {
-        setLoading(false);
-        return;
-      }
-
       try {
-        const projects = await api.listProjects();
+        const project = await api.getProject(projectId);
         if (!alive) return;
-        const project = projects.find((entry) => entry.id === projectId);
-        if (!project) {
+        setCurrentProject(project);
+        setLoadError(null);
+      } catch (error: any) {
+        if (!alive) return;
+        // 404 → project doesn't exist; bounce to dashboard.
+        if (/\(404\)/.test(error?.message ?? '')) {
           router.push('/');
           return;
         }
-        setCurrentProject(project);
-        setLoadError(null);
-        setLoading(false);
-      } catch (error: any) {
-        if (!alive) return;
         retries += 1;
         if (retries >= MAX_RETRIES) {
           setLoadError(
             'Cannot connect to the Atlas backend. Make sure the server is running (cd src/backend && python run_server.py).'
           );
-          setLoading(false);
         } else {
           timeoutId = setTimeout(loadProject, 2000);
         }
@@ -268,12 +280,10 @@ export default function ProjectWorkspacePage() {
 
     loadProjectRef.current = () => {
       retries = 0;
-      setLoading(true);
       setLoadError(null);
       void loadProject();
     };
 
-    setLoading(true);
     setLoadError(null);
     void loadProject();
 
@@ -288,8 +298,9 @@ export default function ProjectWorkspacePage() {
       const registry = await api.getModelRegistry();
       setModelRegistry(registry);
       setModelStatus(registry.active);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to load model registry:', error);
+      toastError(`Model registry unreachable: ${error?.message ?? String(error)}`);
     }
   }, []);
 
@@ -320,57 +331,6 @@ export default function ProjectWorkspacePage() {
     }, 8000);
     return () => window.clearInterval(interval);
   }, [refreshModelRegistry]);
-
-  const refreshDiscoverySessions = useCallback(async () => {
-    if (!currentProject) return;
-
-    try {
-      const sessions = await api.listDiscoverySessions(currentProject.id);
-      const sortedSessions = sessions
-        .map((session) => ({
-          sessionId: session.session_id,
-          sessionName: session.session_name,
-          createdAt: session.created_at,
-          status: session.status,
-        }))
-        .sort((a, b) => {
-          const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-          const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-          return bTime - aTime;
-        });
-
-      setDiscoverySessions(sortedSessions);
-
-      sortedSessions.forEach((session) => {
-        useDiscoveryStore.getState().upsertBackendSession(
-          session.sessionId,
-          session.sessionName,
-          session.createdAt ?? new Date().toISOString(),
-          currentProject.id
-        );
-      });
-
-      if (sortedSessions.length > 0) {
-        setActiveExperimentSessionId((currentId) => {
-          const nextId = currentId && sortedSessions.some((session) => session.sessionId === currentId)
-            ? currentId
-            : sortedSessions[0].sessionId;
-
-          useDiscoveryStore.getState().setActiveSession(nextId);
-          return nextId;
-        });
-      } else {
-        setActiveExperimentSessionId(null);
-      }
-    } catch (error) {
-      console.error('Failed to load discovery sessions:', error);
-    }
-  }, [currentProject]);
-
-  useEffect(() => {
-    if (!currentProject) return;
-    void refreshDiscoverySessions();
-  }, [currentProject, refreshDiscoverySessions]);
 
   const openDocumentTab = useCallback((docId: string, filename: string) => {
     const tabId = `doc:${docId}`;
@@ -474,22 +434,6 @@ export default function ProjectWorkspacePage() {
     setWorkspaceMode(mode);
   }, []);
 
-  const handleExperimentSelect = useCallback((sessionId: string) => {
-    setWorkspaceMode('experiment');
-    setActiveExperimentSessionId(sessionId);
-    useDiscoveryStore.getState().setActiveSession(sessionId);
-  }, []);
-
-  const handleExperimentCreated = useCallback((sessionId: string) => {
-    setExperimentSetupOpen(false);
-    setWorkspaceMode('experiment');
-    if (sessionId) {
-      setActiveExperimentSessionId(sessionId);
-      useDiscoveryStore.getState().setActiveSession(sessionId);
-    }
-    void refreshDiscoverySessions();
-  }, [refreshDiscoverySessions]);
-
   const refreshTasks = useCallback(async () => {
     if (!projectId) return;
     try {
@@ -502,8 +446,8 @@ export default function ProjectWorkspacePage() {
         );
         setActiveTaskId((running || list[0]).id);
       }
-    } catch (err) {
-      // Non-fatal; user will see errors when creating.
+    } catch (err: any) {
+      toastError(`Failed to load tasks: ${err?.message ?? String(err)}`);
     }
   }, [projectId, activeTaskId]);
 
@@ -539,6 +483,22 @@ export default function ProjectWorkspacePage() {
     setTasks((prev) => [task, ...prev.filter((t) => t.id !== task.id)]);
     setActiveTaskId(task.id);
   }, []);
+
+  const handleTaskDelete = useCallback(async (taskId: string) => {
+    const target = tasks.find((t) => t.id === taskId);
+    const label = target?.title || target?.initial_prompt || 'this task';
+    if (!window.confirm(`Delete "${label}"? Its event log and attachments will be erased.`)) {
+      return;
+    }
+    try {
+      await api.deleteTask(taskId);
+      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+      setActiveTaskId((current) => (current === taskId ? null : current));
+      toastSuccess('Task deleted');
+    } catch (err: any) {
+      toastError(err?.message || 'Failed to delete task');
+    }
+  }, [tasks]);
 
   const activeTab = openTabs.find((entry) => entry.id === activeTabId);
 
@@ -615,14 +575,6 @@ export default function ProjectWorkspacePage() {
         return null;
     }
   };
-
-  if (loading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
 
   if (loadError) {
     return (
@@ -721,14 +673,11 @@ export default function ProjectWorkspacePage() {
             onUploadClick={() => uploadInputRef.current?.click()}
             workspaceMode={workspaceMode}
             onWorkspaceModeChange={handleWorkspaceModeChange}
-            discoverySessions={discoverySessions}
-            activeExperimentSessionId={activeExperimentSessionId}
-            onExperimentSelect={(sessionId) => void handleExperimentSelect(sessionId)}
-            onNewExperiment={() => void handleNewTask()}
             tasks={tasks}
             activeTaskId={activeTaskId}
             onTaskSelect={handleTaskSelect}
             onNewTask={() => void handleNewTask()}
+            onTaskDelete={(id) => void handleTaskDelete(id)}
           />
         </div>
 
@@ -811,17 +760,6 @@ export default function ProjectWorkspacePage() {
         onKeysUpdated={refreshModelRegistry}
       />
 
-      {experimentSetupOpen && (
-        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm">
-          <div className="relative h-[min(90vh,860px)] w-full max-w-5xl overflow-hidden rounded-3xl border border-border bg-card shadow-2xl">
-            <MissionControl
-              projectId={currentProject.id}
-              onSuccess={(sessionId) => void handleExperimentCreated(sessionId)}
-              onCancel={() => setExperimentSetupOpen(false)}
-            />
-          </div>
-        </div>
-      )}
     </main>
   );
 }
